@@ -1,5 +1,6 @@
 {
-  "version": "2.1.0",
-  "publishedAt": 1746686400000,
-  "readmeNoteId": "note_id_here"
+  "version": "3.0.0",
+  "publishedAt": 1748851200000,
+  "readmeNoteId": "note_id_here",
+  "changelog": "v3.0: 整合官方 ima-skill 知识库模块（upload/add-url/media/search/list）、笔记浏览/读取、官方更新检测脚本"
 }
