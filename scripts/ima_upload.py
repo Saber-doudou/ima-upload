@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-IMA上传工具 - Python封装版本 v3.0
+IMA上传工具 - Python封装版本 v3.3.0
 
 功能概览：
-  笔记模块：create / upsert / append / search / list / read
-  知识库模块：kb list / kb search / kb info / kb upload / kb add-url / kb media
+  笔记模块：create / upsert / append / search / list / read / image-url
+  知识库模块：kb list / kb search / kb info / kb upload / kb add-url / kb media（含 --download）
 
 增强特性：
   - --file 从文件读取内容
@@ -13,7 +13,10 @@ IMA上传工具 - Python封装版本 v3.0
   - --log 记录 note_id 到本地文件
   - upsert 智能创建/追加（防重复）
   - --dedup 创建前检查同名笔记
-  - 知识库文件上传（含 COS 上传）
+  - --transform-images 笔记插图校验后内嵌 data URL（超限自动降级分批 append_doc）
+  - --dry-run 插图批次报告（只检查不写入）
+  - 知识库文件上传（含 COS 上传；--on-duplicate keep-copy 时间戳副本；--content-type 显式声明）
+  - kb media --download 原文落盘（保留原文件名）
   - 网页/微信文章添加到知识库
 
 使用方法：
@@ -25,23 +28,28 @@ IMA上传工具 - Python封装版本 v3.0
     python ima_upload.py list                          # 列出笔记本
     python ima_upload.py list --nb notebook_id         # 列出笔记本中的笔记
     python ima_upload.py read note_id                  # 读取笔记内容
+    python ima_upload.py upsert "标题" --file n.md --transform-images   # 插图内嵌
+    python ima_upload.py image-url /path/img.png       # 单图换链（需云端会话）
 
     # 知识库操作
     python ima_upload.py kb list                       # 列出知识库
     python ima_upload.py kb search "关键词" --kb kb_id # 搜索知识库
     python ima_upload.py kb info kb_id                 # 知识库详情
     python ima_upload.py kb upload file.pdf --kb kb_id # 上传文件
+    python ima_upload.py kb upload a.pdf --kb kb_id --on-duplicate keep-copy
     python ima_upload.py kb add-url "https://..." --kb kb_id  # 添加网页
     python ima_upload.py kb media media_id             # 获取媒体信息
+    python ima_upload.py kb media media_id --download --out ./dl  # 原文落盘
 """
 
 import os
 import sys
 import json
 import time
-import hashlib
 import hmac
+import hashlib
 import argparse
+import tempfile
 from pathlib import Path
 
 # Windows终端编码修复
@@ -97,6 +105,8 @@ EXT_MAP = {
     "m4a": {"media_type": 15, "content_type": "audio/x-m4a"},
     "wav": {"media_type": 15, "content_type": "audio/wav"},
     "aac": {"media_type": 15, "content_type": "audio/aac"},
+    "html": {"media_type": 20, "content_type": "text/html"},
+    "epub": {"media_type": 21, "content_type": "application/epub+zip"},
 }
 
 MB = 1024 * 1024
@@ -105,11 +115,274 @@ SIZE_LIMITS = {
     7: 10 * MB,   # Markdown
     13: 10 * MB,  # TXT
     14: 10 * MB,  # Xmind
+    20: 10 * MB,  # HTML
     9: 30 * MB,   # Image
+    21: 50 * MB,  # EPUB
 }
 DEFAULT_SIZE_LIMIT = 200 * MB  # PDF, Word, PPT, Audio 等
 
 UNSUPPORTED_VIDEO_EXT = {"mp4", "avi", "mov", "mkv", "wmv", "flv", "webm", "m4v", "rmvb", "rm", "3gp"}
+
+# 官方 preflight-check.cjs UNSUPPORTED_VIDEO_CT：视频 MIME 黑名单（--content-type 命中即拒）
+UNSUPPORTED_VIDEO_CT = {
+    "video/mp4", "video/x-msvideo", "video/quicktime", "video/x-matroska",
+    "video/x-ms-wmv", "video/x-flv", "video/webm",
+}
+
+# 媒体类型展示标签（与官方 MediaType 枚举对齐，仅用于人类可读输出）
+MEDIA_TYPE_LABELS = {
+    1: "PDF", 2: "网页", 3: "Word", 4: "PPT", 5: "Excel",
+    6: "公众号", 7: "Markdown", 9: "图片", 11: "笔记", 12: "AI会话",
+    13: "TXT", 14: "Xmind", 15: "录音", 16: "视频", 20: "HTML", 21: "EPUB",
+    99: "文件夹",
+}
+
+# content-type → media_type 反查表（与官方 preflight-check.cjs 优先级对齐：
+# 显式 content-type 优先于扩展名）。首个条目为准。
+CONTENT_TYPE_MAP = {}
+for _v in EXT_MAP.values():
+    CONTENT_TYPE_MAP.setdefault(_v["content_type"], _v["media_type"])
+CONTENT_TYPE_MAP.update({
+    "text/x-markdown": 7,
+    "application/md": 7,
+    "application/markdown": 7,
+})
+
+
+def _detect_image_type(head):
+    """
+    识别图片真实签名（魔数），只吃文件头 12 字节。
+    与官方 preflight-check.cjs detectImageType 一致：
+      PNG: 89 50 4E 47 0D 0A 1A 0A / JPEG: FF D8 FF / WEBP: RIFF....WEBP
+    """
+    if len(head) >= 8 and head[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if len(head) >= 3 and head[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
+
+
+def _validate_image_signature(head, expected_type="", source="image"):
+    """
+    校验图片头字节签名，返回真实 MIME；失败抛 IMAError。
+    expected_type 非空时同时校验签名与声明类型一致（上传预检与笔记插图共用）。
+    """
+    detected = _detect_image_type(head)
+    if not detected:
+        raise IMAError(-1, f"图片文件签名无效或不受支持（仅支持 PNG/JPEG/WebP）: {source}")
+    if expected_type and detected != expected_type:
+        raise IMAError(-1, f"文件签名与声明类型（扩展名/content-type）不符：实际 {detected}，声明 {expected_type}: {source}")
+    return detected
+
+
+# Windows 保留设备名（写入会导向设备并静默吞数据，P2-6）
+_WINDOWS_RESERVED_NAMES = (
+    {"con", "prn", "aux", "nul"}
+    | {f"com{i}" for i in range(1, 10)}
+    | {f"lpt{i}" for i in range(1, 10)}
+)
+
+
+def _safe_filename(raw_name, fallback="download"):
+    """
+    收敛文件名为安全 basename（防路径穿越，P0-1；防保留设备名吞数据，P2-6）。
+    1. 剔除目录分量（兼容 / 与 \\ 两种分隔符，防跨平台绕过）
+    2. 剔除 Windows 非法字符 <>:"/\\|?* 与控制字符
+    3. 剔除结尾点与空格；清洗后为空则回退 fallback
+    4. Windows 保留设备名（CON/PRN/AUX/NUL/COM1-9/LPT1-9，含 CON.md 形式）
+       加 safe_ 前缀改写（不拒绝，保证下载仍可用）
+    """
+    name = str(raw_name or "")
+    name = name.replace("\\", "/").rsplit("/", 1)[-1]
+    name = re.sub(r'[<>:"|?*\x00-\x1f]', "", name)
+    name = name.rstrip(". ")
+    if not name:
+        return fallback
+    stem = name.split(".", 1)[0].lower()
+    if stem in _WINDOWS_RESERVED_NAMES:
+        name = "safe_" + name
+    return name
+
+
+def _is_content_related_error(err):
+    """
+    降级错误分类（P2-7 方案 A）：仅疑似 content 相关错误才值得分批降级重试。
+    业务错误码（非 -1，如敏感词/权限/配额）与标题/权限/配额/敏感词类消息直接原样抛出，不做白重试。
+    """
+    if err.code != -1:
+        return False
+    msg = err.msg or ""
+    msg_l = msg.lower()
+    unrelated = ("标题", "权限", "配额", "敏感词", "违规",
+                 "title", "permission", "quota", "sensitive", "forbidden", "unauthorized")
+    if any(k in msg_l or k in msg for k in unrelated):
+        return False
+    return True
+
+
+# ========== 笔记插图转存（与官方 note-images.cjs 对齐） ==========
+# 官方行为：图片校验后转 base64 data URL 内嵌，按 text/image 分批写入；
+# 换链仅限 --url 单图模式（mcp_cloud_agent 双端点，实测需云端会话）。
+
+import re
+import base64
+import shutil
+
+NOTE_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+DATA_URL_RE = re.compile(r"^data:(image/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]+={0,2})$", re.I)
+MAX_NOTE_IMAGE_SIZE = 3 * 1024 * 1024  # 官方严格小于 3MiB
+BATCH_INLINE_LIMIT = 2 * 1024 * 1024   # 超过则降级官方分批 append_doc 模式
+_NOTE_IMAGE_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
+
+
+def _local_image_path(source):
+    """识别本地路径来源（file:// 或绝对路径），否则返回空串"""
+    if source.startswith("file://"):
+        return urllib.parse.unquote(source[7:])
+    if source.startswith("/") or re.match(r"^[A-Za-z]:[\\/]", source):
+        return source
+    return ""
+
+
+def _load_note_image(source, timeout=30):
+    """
+    读取图片源（本地文件 / http(s) URL / data URL），
+    校验魔数与 <3MiB 限制，返回 (mime, bytes)。
+    """
+    # data URL
+    if source.startswith("data:"):
+        match = DATA_URL_RE.match(source)
+        if not match:
+            raise IMAError(-1, "不支持的 data URL：仅接受 base64 的 PNG/JPEG/WebP")
+        data = base64.b64decode(match.group(2))
+        declared = match.group(1).lower()
+        if len(data) >= MAX_NOTE_IMAGE_SIZE:
+            raise IMAError(-1, f"图片必须小于 3MiB: data URL（{len(data)} 字节）")
+        mime = _validate_image_signature(data[:12], declared, "data URL")
+        return mime, data
+
+    # 本地文件
+    local = _local_image_path(source)
+    if local:
+        p = Path(local)
+        if not p.is_file():
+            raise IMAError(-1, f"图片文件不存在: {local}")
+        if p.stat().st_size >= MAX_NOTE_IMAGE_SIZE:
+            raise IMAError(-1, f"图片必须小于 3MiB: {local}（{p.stat().st_size} 字节）")
+        data = p.read_bytes()
+        if len(data) >= MAX_NOTE_IMAGE_SIZE:
+            raise IMAError(-1, f"图片必须小于 3MiB: {local}")
+        mime = _validate_image_signature(data[:12], "", local)
+        return mime, data
+
+    # 网络 URL（边下边计数，超限即断）
+    if source.startswith("http://") or source.startswith("https://"):
+        try:
+            if HAS_REQUESTS:
+                resp = requests.get(source, timeout=timeout,
+                                    headers={"Accept": "image/png,image/jpeg,image/webp,image/*;q=0.8"},
+                                    stream=True)
+                if resp.status_code != 200:
+                    raise IMAError(-1, f"网络图片下载失败 (HTTP {resp.status_code}): {source}")
+                chunks = []
+                total = 0
+                for chunk in resp.iter_content(chunk_size=64 * 1024):
+                    total += len(chunk)
+                    if total >= MAX_NOTE_IMAGE_SIZE:
+                        raise IMAError(-1, f"网络图片必须小于 3MiB: {source}")
+                    chunks.append(chunk)
+                data = b"".join(chunks)
+            else:
+                req = urllib.request.Request(
+                    source, headers={"Accept": "image/png,image/jpeg,image/webp,image/*;q=0.8"})
+                with urllib.request.urlopen(req, timeout=timeout) as response:
+                    if response.status != 200:
+                        raise IMAError(-1, f"网络图片下载失败 (HTTP {response.status}): {source}")
+                    data = response.read(MAX_NOTE_IMAGE_SIZE + 1)
+                if len(data) >= MAX_NOTE_IMAGE_SIZE:
+                    raise IMAError(-1, f"网络图片必须小于 3MiB: {source}")
+        except IMAError:
+            raise
+        except Exception as e:
+            raise IMAError(-1, f"网络图片下载失败: {source}（{e}）")
+        mime = _validate_image_signature(data[:12], "", source)
+        return mime, data
+
+    raise IMAError(-1, f"不支持的图片来源: {source}")
+
+
+def transform_note_images(markdown, timeout=30):
+    """
+    将 markdown 中的图片链接校验后内嵌为 data URL（官方内嵌模式）。
+    返回 (新markdown, 统计列表)。
+    """
+    out = []
+    stats = []
+    last = 0
+    for match in NOTE_IMAGE_RE.finditer(markdown):
+        alt, src = match.group(1), match.group(2).strip()
+        mime, data = _load_note_image(src, timeout=timeout)
+        data_url = f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+        out.append(markdown[last:match.start()])
+        out.append(f"![{alt}]({data_url})")
+        stats.append({"source": src, "mime": mime, "bytes": len(data)})
+        last = match.end()
+    out.append(markdown[last:])
+    return "".join(out), stats
+
+
+def split_note_batches(markdown):
+    """
+    按 text / image 切批（官方 createBatches 语义），
+    供大内容降级为 append_doc 逐批写入。返回 [{type, content}]。
+    """
+    batches = []
+    text = ""
+    last = 0
+
+    def flush():
+        nonlocal text
+        if text.strip():
+            batches.append({"type": "text", "content": text})
+        text = ""
+
+    for match in NOTE_IMAGE_RE.finditer(markdown):
+        text += markdown[last:match.start()]
+        flush()
+        batches.append({"type": "image", "content": match.group(0)})
+        last = match.end()
+    text += markdown[last:]
+    flush()
+    return batches
+
+
+def _apply_transform(content, transform_images):
+    """
+    图片转存处理：返回 (content, batches, report)。
+    - 未开启：原样返回
+    - 开启且内联体积 <= BATCH_INLINE_LIMIT：inline（batches=None）
+    - 超限：降级官方分批 append_doc 模式（D2）
+    report 含图片统计与批次结构（--dry-run 直接输出）。
+    """
+    if not transform_images:
+        return content, None, None
+    transformed, stats = transform_note_images(content)
+    size = len(transformed.encode("utf-8"))
+    batches = split_note_batches(transformed) if size > BATCH_INLINE_LIMIT else None
+    report = {
+        "images": stats,
+        "total_bytes": size,
+        "mode": "batched" if batches else "inline",
+        # 降级可读标记（P0-3）：体积超限已降级 / inline 写入报错时自动降级
+        "degrade": "inline→batched (size)" if batches else "inline→batched (on-error)",
+        "batches": [
+            {"index": i + 1, "type": b["type"], "bytes": len(b["content"].encode("utf-8"))}
+            for i, b in enumerate(split_note_batches(transformed))
+        ],
+    }
+    return transformed, batches, report
 
 
 class IMAUploader:
@@ -204,23 +477,137 @@ class IMAUploader:
         except UnicodeEncodeError as e:
             raise IMAError(-1, f"{field_name} 包含非法 UTF-8 字符: {e}")
 
-    def create_note(self, title, content, folder_id=None):
-        """创建新笔记"""
+    def create_note(self, title, content, folder_id=None, transform_images=False):
+        """创建新笔记。transform_images=True 时先内嵌图片；超限或写入报错自动降级分批"""
         self._validate_utf8(title, "title")
         self._validate_utf8(content, "content")
-        body = {"title": title, "content": content, "content_format": 1}
+        if not transform_images:
+            body = {"title": title, "content": content, "content_format": 1}
+            if folder_id:
+                body["folder_id"] = folder_id
+            result = self._request("openapi/note/v1/import_doc", body)
+            note_id = result.get("data", {}).get("note_id", "")
+            return {"note_id": note_id, "title": title}
+
+        transformed, batches, _ = _apply_transform(content, True)
+        if batches:
+            return self.create_note_batched(title, batches, folder_id=folder_id)
+        body = {"title": title, "content": transformed, "content_format": 1}
+        if folder_id:
+            body["folder_id"] = folder_id
+        try:
+            result = self._request("openapi/note/v1/import_doc", body)
+        except IMAError as e:
+            # D2 报错降级：仅 content 相关错误值得分批重试（P2-7）
+            fallback = split_note_batches(transformed)
+            if len(fallback) > 1 and _is_content_related_error(e):
+                try:
+                    r = self.create_note_batched(title, fallback, folder_id=folder_id)
+                    r["degraded"] = "inline→batched"
+                    return r
+                except IMAError as e2:
+                    raise IMAError(e2.code, f"inline 与 batched 均失败: inline（{e.msg}） batched（{e2.msg}）")
+            raise
+        note_id = result.get("data", {}).get("note_id", "")
+        return {"note_id": note_id, "title": title}
+
+    def append_note(self, note_id, content, transform_images=False):
+        """追加内容到已有笔记。transform_images=True 时先内嵌图片；超限或写入报错自动降级分批"""
+        self._validate_utf8(content, "content")
+        if not transform_images:
+            body = {"note_id": note_id, "content": content, "content_format": 1}
+            self._request("openapi/note/v1/append_doc", body)
+            return {"note_id": note_id, "ok": True}
+
+        transformed, batches, _ = _apply_transform(content, True)
+        if batches:
+            return self._write_note_batches(note_id, batches)
+        body = {"note_id": note_id, "content": transformed, "content_format": 1}
+        try:
+            self._request("openapi/note/v1/append_doc", body)
+        except IMAError as e:
+            # D2 报错降级：仅 content 相关错误值得分批重试（P2-7）
+            fallback = split_note_batches(transformed)
+            if len(fallback) > 1 and _is_content_related_error(e):
+                try:
+                    r = self._write_note_batches(note_id, fallback)
+                    r["degraded"] = "inline→batched"
+                    return r
+                except IMAError as e2:
+                    raise IMAError(e2.code, f"inline 与 batched 均失败: inline（{e.msg}） batched（{e2.msg}）")
+            raise
+        return {"note_id": note_id, "ok": True}
+
+    def _write_note_batches(self, note_id, batches):
+        """按官方 createBatches 语义逐批 append_doc，任一批失败即停并报批次号"""
+        if not batches:
+            raise IMAError(-1, "batches 不能为空（无可写入内容）")
+        total = len(batches)
+        for i, batch in enumerate(batches, 1):
+            try:
+                self._request("openapi/note/v1/append_doc", {
+                    "note_id": note_id,
+                    "content": batch["content"],
+                    "content_format": 1,
+                })
+            except IMAError as e:
+                raise IMAError(e.code, f"batch {i}/{total}（{batch['type']}）写入失败: {e.msg}")
+        return {"note_id": note_id, "ok": True, "batches": total}
+
+    def append_note_batched(self, note_id, batches):
+        """降级路径：内容按批追加（D2）"""
+        return self._write_note_batches(note_id, batches)
+
+    def create_note_batched(self, title, batches, folder_id=None):
+        """降级路径：首批走 import_doc 创建，其余批 append_doc（D2）"""
+        self._validate_utf8(title, "title")
+        if not batches:
+            raise IMAError(-1, "batches 不能为空（无可写入内容）")
+        first, rest = batches[0], batches[1:]
+        body = {"title": title, "content": first["content"], "content_format": 1}
         if folder_id:
             body["folder_id"] = folder_id
         result = self._request("openapi/note/v1/import_doc", body)
         note_id = result.get("data", {}).get("note_id", "")
-        return {"note_id": note_id, "title": title}
+        if rest:
+            self._write_note_batches(note_id, rest)
+        return {"note_id": note_id, "title": title, "batches": len(batches)}
 
-    def append_note(self, note_id, content):
-        """追加内容到已有笔记"""
-        self._validate_utf8(content, "content")
-        body = {"note_id": note_id, "content": content, "content_format": 1}
-        self._request("openapi/note/v1/append_doc", body)
-        return {"note_id": note_id, "ok": True}
+    def upload_note_image(self, image_source, timeout=30):
+        """
+        单图转存换链（官方 note-images --url 模式）：
+        upload_temp_file → get_access_url 返回 download_url。
+        实测该双端点（mcp_cloud_agent 前缀）需要 MCP 云代理会话，
+        本地 client_id 调用会报「session ID is required」，失败时给出明确降级指引。
+        """
+        mime, data = _load_note_image(image_source, timeout=timeout)
+        ext = _NOTE_IMAGE_EXT[mime]
+        tmpdir = tempfile.mkdtemp(prefix="ima-note-image-")
+        try:
+            normalized = Path(tmpdir) / f"image{ext}"
+            normalized.write_bytes(data)
+            try:
+                up = self._request("openapi/mcp_cloud_agent/upload_temp_file",
+                                   {"file_path": str(normalized)})
+            except IMAError as e:
+                if e.code == 100001 or "session" in (e.msg or "").lower():
+                    raise IMAError(e.code,
+                                   f"图片换链暂不可用（{e.msg}）。该端点需要 MCP 云代理会话，"
+                                   f"本地直连不支持，且重试必然同样失败，请勿重复调用。出口三选一："
+                                   f"①改用 --transform-images 内嵌图片（推荐，本地可完成）；"
+                                   f"②换官方 ima-skills 的 notes/scripts/note-images.cjs --url 模式"
+                                   f"（须在 Agent/MCP 云代理会话环境运行）；③使用 ima 客户端。")
+                raise
+            coskey = up.get("data", {}).get("coskey")
+            if not coskey:
+                raise IMAError(-1, "upload_temp_file 未返回 coskey")
+            acc = self._request("openapi/mcp_cloud_agent/get_access_url", {"coskey": coskey})
+            url = acc.get("data", {}).get("download_url")
+            if not url:
+                raise IMAError(-1, "get_access_url 未返回 download_url")
+            return {"url": url, "mime": mime}
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
     def search_notes(self, keyword, search_type=0):
         """搜索笔记。search_type: 0=标题, 1=正文"""
@@ -249,12 +636,12 @@ class IMAUploader:
         results = self.search_notes(title, search_type=0)
         return [n for n in results if n.get("title") == title]
 
-    def upsert_note(self, title, content, folder_id=None):
+    def upsert_note(self, title, content, folder_id=None, transform_images=False):
         """智能创建/追加：搜索同名笔记，存在则追加，不存在则新建"""
         existing = self.find_exact_title(title)
         if existing:
             target = existing[0]
-            self.append_note(target["note_id"], content)
+            self.append_note(target["note_id"], content, transform_images=transform_images)
             return {
                 "note_id": target["note_id"],
                 "title": title,
@@ -262,7 +649,8 @@ class IMAUploader:
                 "existing_count": len(existing)
             }
         else:
-            result = self.create_note(title, content, folder_id=folder_id)
+            result = self.create_note(title, content, folder_id=folder_id,
+                                      transform_images=transform_images)
             result["action"] = "created"
             result["existing_count"] = 0
             return result
@@ -282,10 +670,33 @@ class IMAUploader:
         ]
 
     def list_notes(self, folder_id=None, limit=20):
-        """列出笔记。folder_id=None 则列出全部笔记"""
-        body = {"folder_id": folder_id or "", "sort_type": 0, "cursor": "", "limit": limit}
-        result = self._request("openapi/note/v1/list_note", body)
-        notes = result.get("data", {}).get("note_book_list", [])
+        """
+        列出笔记。folder_id=None 则列出全部笔记。
+
+        实测约束：
+          - limit 单页上限 20，超过会返回空列表且 code=0（静默失败）
+          - cursor 是偏移量（已取条数），不是不透明游标
+          - 响应只有 is_end，没有 next_cursor
+        因此这里按偏移量自动翻页，直到取满 limit 或列表结束。
+        """
+        target = max(1, int(limit))
+        collected = []
+        offset = 0
+
+        while len(collected) < target:
+            page = min(20, target - len(collected))
+            body = {"folder_id": folder_id or "", "sort_type": 0,
+                    "cursor": str(offset), "limit": page}
+            result = self._request("openapi/note/v1/list_note", body)
+            data = result.get("data", {})
+            batch = data.get("note_book_list", [])
+            if not batch:
+                break
+            collected.extend(batch)
+            if data.get("is_end", True) or len(batch) < page:
+                break
+            offset += len(batch)
+
         return [
             {
                 "note_id": n.get("note_id"),
@@ -295,7 +706,7 @@ class IMAUploader:
                 "modify_time": n.get("modify_time"),
                 "folder_name": n.get("note_ext_info", {}).get("folder_name"),
             }
-            for n in notes
+            for n in collected[:target]
         ]
 
     def get_note_content(self, note_id):
@@ -308,13 +719,31 @@ class IMAUploader:
 
     # ==================== 知识库模块 ====================
 
+    @staticmethod
+    def _normalize_kb(item):
+        """
+        知识库字段归一化。
+        实测差异（官方 api.md 未反映）：
+          - search_knowledge_base 返回 kb_id / kb_name
+          - get_addable_knowledge_base_list 返回 id / name
+        统一输出 id / name，避免下游再判断。
+        """
+        return {
+            "id": item.get("kb_id") or item.get("id"),
+            "name": item.get("kb_name") or item.get("name"),
+            "cover_url": item.get("cover_url", ""),
+            "content_count": item.get("content_count"),
+            "role_type": item.get("role_type"),
+            "base_type": item.get("base_type"),
+        }
+
     def list_knowledge_bases(self, limit=20):
         """列出所有知识库（空 query 搜索）"""
         result = self._request("openapi/wiki/v1/search_knowledge_base", {
             "query": "", "cursor": "", "limit": limit
         })
         infos = result.get("data", {}).get("info_list", [])
-        return [{"id": kb.get("id"), "name": kb.get("name"), "cover_url": kb.get("cover_url")} for kb in infos]
+        return [self._normalize_kb(kb) for kb in infos]
 
     def search_knowledge_bases(self, keyword, limit=20):
         """按名称搜索知识库"""
@@ -322,7 +751,7 @@ class IMAUploader:
             "query": keyword, "cursor": "", "limit": limit
         })
         infos = result.get("data", {}).get("info_list", [])
-        return [{"id": kb.get("id"), "name": kb.get("name"), "cover_url": kb.get("cover_url")} for kb in infos]
+        return [self._normalize_kb(kb) for kb in infos]
 
     def get_knowledge_base_info(self, kb_ids):
         """获取知识库详情（1-20个）"""
@@ -354,7 +783,9 @@ class IMAUploader:
             {
                 "media_id": item.get("media_id"),
                 "title": item.get("title"),
-                "folder_id": item.get("parent_folder_id"),
+                # 保留原名字段，不要映射成 folder_id：本字段是父目录，不是条目自身 ID
+                "parent_folder_id": item.get("parent_folder_id"),
+                "media_type": item.get("media_type"),
                 "highlight": item.get("highlight_content"),
             }
             for item in data.get("info_list", [])
@@ -364,6 +795,98 @@ class IMAUploader:
         """获取媒体信息（用于查看原文/导出）"""
         result = self._request("openapi/wiki/v1/get_media_info", {"media_id": media_id})
         return result.get("data", {})
+
+    def _http_download(self, url, headers, dest_path, timeout=120):
+        """HTTP GET 流式下载到本地（抽离便于测试拦截；两分支错误口径统一为 IMAError）"""
+        if HAS_REQUESTS:
+            try:
+                resp = requests.get(url, headers=headers, stream=True, timeout=timeout)
+            except Exception as e:
+                raise IMAError(-1, f"原文下载失败（{e}），请使用ima客户端查看原文")
+            if resp.status_code != 200:
+                raise IMAError(-1, f"原文下载失败 (HTTP {resp.status_code})，请使用ima客户端查看原文")
+            with open(dest_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=64 * 1024):
+                    if chunk:
+                        f.write(chunk)
+        else:
+            req = urllib.request.Request(url, headers=headers or {}, method="GET")
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as response:
+                    if response.status != 200:
+                        raise IMAError(-1, f"原文下载失败 (HTTP {response.status})，请使用ima客户端查看原文")
+                    with open(dest_path, "wb") as f:
+                        while True:
+                            chunk = response.read(64 * 1024)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+            except urllib.error.HTTPError as e:
+                raise IMAError(-1, f"原文下载失败 (HTTP {e.code})，请使用ima客户端查看原文")
+            except urllib.error.URLError as e:
+                raise IMAError(-1, f"原文下载失败（{e.reason}），请使用ima客户端查看原文")
+
+    def download_media(self, media_id, output_dir=None, file_name=None):
+        """
+        下载知识库原文并落盘。
+        实测注意：url_info.url 是带 sign 的预签名链接，查询串已含
+        response-content-type / media_title，追加任何参数都会破坏签名（403），
+        因此签名 URL 原样使用；仅未签名 URL 才按官方约定追加
+        response-content-type + response-content-disposition=attachment;filename。
+        返回 {"media_id", "file_name", "path"}。
+        """
+        info = self.get_media_info(media_id)
+        if not info or info.get("media_type") is None:
+            raise IMAError(-1, f"未查到媒体 {media_id}；请确认 media_id 是否正确（可用 `kb ls` 获取）")
+        if info.get("media_type") == 11:
+            raise IMAError(-1, "该媒体是笔记类型，请使用 `read` 命令读取笔记内容")
+        url_info = info.get("url_info") or {}
+        url = url_info.get("url") or ""
+        if not url:
+            raise IMAError(-1, "该媒体无可下载链接，请使用ima客户端查看原文")
+        headers = url_info.get("headers") or {}
+
+        parsed = urllib.parse.urlparse(url)
+        query = urllib.parse.parse_qs(parsed.query)
+        is_signed = any(k in query for k in ("sign", "q-signature", "x-cos-signature", "signature"))
+
+        # 确定落盘文件名：显式指定 > URL 的 media_title > URL 末段 > media_id 兜底
+        if not file_name:
+            title = (query.get("media_title") or [""])[0]
+            url_name = urllib.parse.unquote(parsed.path.rsplit("/", 1)[-1])
+            file_name = title or url_name or f"{media_id}"
+
+        # P0-1 路径穿越防护：强制 basename 收敛 + 非法字符清洗 + 保留设备名改写（P2-6），空则回退 media_id 兜底名
+        fallback = _safe_filename(media_id, "download")
+        file_name = _safe_filename(file_name, fallback)
+
+        download_url = url
+        if not is_signed:
+            # 官方强制下载约定（仅适用于未签名 URL；签名 URL 不能动查询串）
+            disposition = f'attachment;filename="{file_name}"'
+            sep = "&" if "?" in url else "?"
+            download_url = (
+                f"{url}{sep}response-content-type=application/octet-stream"
+                f"&response-content-disposition={urllib.parse.quote(disposition, safe='')}"
+            )
+
+        out_dir = Path(output_dir) if output_dir else Path.cwd()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        dest = out_dir / file_name
+        if dest.exists():
+            import datetime
+            ts = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+            dest = out_dir / f"{dest.stem}_{ts}{dest.suffix}"
+
+        # 落点必须收敛在 out_dir 之内（resolve 后校验，防符号链接/绝对路径绕过）
+        out_root = out_dir.resolve()
+        try:
+            dest.resolve().relative_to(out_root)
+        except ValueError:
+            raise IMAError(-1, f"文件名非法（落点越出目标目录），已拒绝: {file_name}")
+
+        self._http_download(download_url, headers, str(dest))
+        return {"media_id": media_id, "file_name": file_name, "path": str(dest)}
 
     def check_repeated_names(self, kb_id, file_names_and_types, folder_id=None):
         """检查文件名是否重复"""
@@ -405,11 +928,22 @@ class IMAUploader:
         return {"media_id": result.get("data", {}).get("media_id"), "title": title, "action": "linked"}
 
     def find_folder(self, kb_id, folder_name):
-        """按名称搜索知识库中的文件夹"""
+        """
+        按名称搜索知识库中的文件夹。
+        文件夹特征：media_type=99 且 media_id 以 folder 开头；其 media_id 即 folder_id。
+        """
         results = self.search_knowledge(folder_name, kb_id)
-        # 文件夹的特征：有 folder_id 且无 media_id，或 title 匹配
-        folders = [r for r in results if r.get("folder_id") and folder_name in (r.get("title") or "")]
-        return folders
+        return [
+            {
+                "folder_id": r["media_id"],
+                "title": r.get("title"),
+                "parent_folder_id": r.get("parent_folder_id"),
+            }
+            for r in results
+            if r.get("media_type") == 99
+            and str(r.get("media_id", "")).startswith("folder")
+            and folder_name in (r.get("title") or "")
+        ]
 
     def get_knowledge_list_paged(self, kb_id, folder_id=None, limit=50):
         """浏览知识库内容（自动翻页，返回全部结果）"""
@@ -429,34 +963,48 @@ class IMAUploader:
                 break
         return all_items
 
-    def upload_file_to_kb(self, file_path, kb_id, folder_id=None):
+    def upload_file_to_kb(self, file_path, kb_id, folder_id=None, content_type=None, on_duplicate="cancel"):
         """
         上传文件到知识库（完整流程）。
-        1. 文件类型/大小检查
-        2. 重名检查
+        1. 文件类型/大小/图片签名校验
+        2. 重名检查（on_duplicate: cancel=拒绝并提示重命名 / keep-copy=追加时间戳副本）
         3. create_media 获取 COS 凭证
-        4. COS 上传
-        5. add_knowledge 确认
+        4. COS 上传（失败即中止，不调 add_knowledge）
+        5. add_knowledge 确认（title 恒等于最终文件名）
 
-        Returns:
-            dict: {"media_id": "...", "title": "...", "action": "uploaded"}
+        content_type 显式传入时优先于扩展名（与官方 preflight 优先级一致）。
         """
         file_path = Path(file_path)
         if not file_path.exists():
             raise IMAError(-1, f"文件不存在: {file_path}")
 
-        # Step 1: 文件类型检查
+        # Step 1: 文件类型检查（显式 content-type 优先于扩展名）
         ext = file_path.suffix.lstrip(".").lower()
         if ext in UNSUPPORTED_VIDEO_EXT:
             raise IMAError(-1, f"不支持的视频文件类型: .{ext}。请使用 IMA 桌面端添加视频。")
-        if ext not in EXT_MAP:
-            raise IMAError(-1, f"不支持的文件类型: .{ext}。支持的类型: {', '.join(sorted(EXT_MAP.keys()))}")
+        if content_type and content_type.split(";", 1)[0].strip().lower() in UNSUPPORTED_VIDEO_CT:
+            raise IMAError(-1, f"不支持的视频内容类型: {content_type}。请使用 IMA 桌面端添加视频。")
 
-        mapping = EXT_MAP[ext]
+        mapping = None
+        if content_type:
+            ct_mt = CONTENT_TYPE_MAP.get(content_type)
+            if ct_mt is not None:
+                mapping = {"media_type": ct_mt, "content_type": content_type}
+        if mapping is None:
+            if ext not in EXT_MAP:
+                raise IMAError(-1, f"不支持的文件类型: .{ext}。支持的类型: {', '.join(sorted(EXT_MAP.keys()))}")
+            mapping = EXT_MAP[ext]
+
         media_type = mapping["media_type"]
         content_type = mapping["content_type"]
         file_size = file_path.stat().st_size
         file_name = file_path.name
+
+        # Step 1b: 图片签名校验（魔数与扩展名/声明类型一致性）
+        if media_type == 9:
+            with open(file_path, "rb") as fh:
+                head = fh.read(12)
+            _validate_image_signature(head, content_type, source=file_name)
 
         # Step 2: 大小检查
         size_limit = SIZE_LIMITS.get(media_type, DEFAULT_SIZE_LIMIT)
@@ -465,11 +1013,28 @@ class IMAUploader:
             size_mb = file_size / MB
             raise IMAError(-1, f"文件大小 {size_mb:.1f} MB 超过限制 {limit_mb:.0f} MB")
 
-        # Step 3: 重名检查
+        # Step 3: 重名检查（只允许取消或时间戳副本，不支持覆盖）
         dup_results = self.check_repeated_names(kb_id, [(file_name, media_type)], folder_id)
         for r in dup_results:
             if r.get("is_repeated"):
-                raise IMAError(-1, f"知识库中已存在同名文件「{file_name}」。请重命名后重试。")
+                if on_duplicate == "keep-copy":
+                    import datetime
+                    ts = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+                    stem = file_path.stem
+                    suffix = file_path.suffix
+                    # P2-8 序号棘轮：秒级时间戳同秒碰撞时追加序号，每个候选名都复查，最多 3 次序号重试
+                    candidates = [f"{stem}_{ts}{suffix}"] + [f"{stem}_{ts}_{i}{suffix}" for i in range(1, 4)]
+                    chosen = None
+                    for cand in candidates:
+                        recheck = self.check_repeated_names(kb_id, [(cand, media_type)], folder_id)
+                        if not any(r2.get("is_repeated") for r2 in recheck):
+                            chosen = cand
+                            break
+                    if chosen is None:
+                        raise IMAError(-1, f"时间戳副本名连试 {len(candidates)} 次均与现有文件重复，已取消上传（不支持覆盖）。")
+                    file_name = chosen
+                else:
+                    raise IMAError(-1, f"知识库中已存在同名文件「{file_name}」。请重命名后重试，或使用 --on-duplicate keep-copy 保留副本。")
 
         # Step 4: create_media
         create_body = {
@@ -607,7 +1172,7 @@ class IMAError(Exception):
 
 def _build_parser():
     parser = argparse.ArgumentParser(
-        description="IMA笔记上传工具 v3.0（笔记+知识库）",
+        description="IMA笔记上传工具 v3.3.0（笔记+知识库）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 笔记操作：
@@ -627,6 +1192,7 @@ def _build_parser():
   python ima_upload.py kb upload file.pdf --kb id  # 上传文件到知识库
   python ima_upload.py kb add-url "https://..." --kb id  # 添加网页
   python ima_upload.py kb media media_id           # 获取媒体信息
+  python ima_upload.py kb media media_id --download --out ./dl  # 原文落盘
 """
     )
     sub = parser.add_subparsers(dest="command", help="子命令")
@@ -639,6 +1205,10 @@ def _build_parser():
     p_create.add_argument("--json", "-j", action="store_true", help="JSON纯输出")
     p_create.add_argument("--log", "-l", dest="log_file", help="将 note_id 追加记录到文件")
     p_create.add_argument("--dedup", action="store_true", help="创建前检查同名笔记，存在则警告并跳过")
+    p_create.add_argument("--transform-images", dest="transform_images", action="store_true",
+                          help="将 markdown 图片（本地/URL/data URL）校验后内嵌为 data URL（<3MiB，PNG/JPEG/WebP）")
+    p_create.add_argument("--dry-run", dest="dry_run", action="store_true",
+                          help="配合 --transform-images：只校验并输出批次报告，不写入")
 
     # upsert
     p_upsert = sub.add_parser("upsert", help="智能创建：同名存在则追加，不存在则新建")
@@ -647,6 +1217,10 @@ def _build_parser():
     p_upsert.add_argument("--file", "-f", dest="file", help="从文件读取内容")
     p_upsert.add_argument("--json", "-j", action="store_true", help="JSON纯输出")
     p_upsert.add_argument("--log", "-l", dest="log_file", help="将 note_id 追加记录到文件")
+    p_upsert.add_argument("--transform-images", dest="transform_images", action="store_true",
+                          help="将 markdown 图片校验后内嵌为 data URL")
+    p_upsert.add_argument("--dry-run", dest="dry_run", action="store_true",
+                          help="配合 --transform-images：只校验并输出批次报告，不写入")
 
     # append
     p_append = sub.add_parser("append", help="追加内容到已有笔记")
@@ -654,12 +1228,23 @@ def _build_parser():
     p_append.add_argument("content", nargs="?", default=None, help="追加内容（省略时用 --file）")
     p_append.add_argument("--file", "-f", dest="file", help="从文件读取内容")
     p_append.add_argument("--json", "-j", action="store_true", help="JSON纯输出")
+    p_append.add_argument("--transform-images", dest="transform_images", action="store_true",
+                          help="将 markdown 图片校验后内嵌为 data URL")
+    p_append.add_argument("--dry-run", dest="dry_run", action="store_true",
+                          help="配合 --transform-images：只校验并输出批次报告，不写入")
+
+    # image-url（官方 note-images --url 换链模式）
+    p_imgurl = sub.add_parser("image-url", help="单图转存换链（需 MCP 云代理会话，本地调用会明确报不支持）")
+    p_imgurl.add_argument("src", help="图片源：本地路径 / file:// / data URL")
+    p_imgurl.add_argument("--json", "-j", action="store_true", help="JSON纯输出")
 
     # search
     p_search = sub.add_parser("search", help="搜索笔记")
     p_search.add_argument("keyword", help="搜索关键词")
     p_search.add_argument("--type", "-t", choices=["title", "content"], default="title",
                           help="搜索类型（默认：标题）")
+    p_search.add_argument("--limit", type=int, default=20,
+                          help="最多返回条数（默认20；需要全量时调大）")
     p_search.add_argument("--json", "-j", action="store_true", help="JSON纯输出")
 
     # list（新增）
@@ -704,6 +1289,11 @@ def _build_parser():
     p_kb_upload.add_argument("file", help="文件路径")
     p_kb_upload.add_argument("--kb", dest="kb_id", required=True, help="知识库ID")
     p_kb_upload.add_argument("--folder", dest="folder_id", help="文件夹ID")
+    p_kb_upload.add_argument("--content-type", dest="content_type",
+                             help="显式声明 MIME（优先于扩展名，如 text/markdown）")
+    p_kb_upload.add_argument("--on-duplicate", dest="on_duplicate",
+                             choices=["cancel", "keep-copy"], default="cancel",
+                             help="重名处理：cancel=拒绝并提示重命名（默认）；keep-copy=追加时间戳保留副本（不支持覆盖）")
     p_kb_upload.add_argument("--json", "-j", action="store_true", help="JSON纯输出")
 
     # kb add-url
@@ -714,8 +1304,10 @@ def _build_parser():
     p_kb_url.add_argument("--json", "-j", action="store_true", help="JSON纯输出")
 
     # kb media
-    p_kb_media = kb_sub.add_parser("media", help="获取媒体信息")
+    p_kb_media = kb_sub.add_parser("media", help="获取媒体信息（--download 下载原文落盘）")
     p_kb_media.add_argument("media_id", help="媒体ID")
+    p_kb_media.add_argument("--download", action="store_true", help="下载原文到本地（保留原文件名）")
+    p_kb_media.add_argument("--out", dest="out_dir", help="下载目录（默认当前目录）")
     p_kb_media.add_argument("--json", "-j", action="store_true", help="JSON纯输出")
 
     # kb addable
@@ -773,11 +1365,18 @@ def _output(result, as_json, success_msg):
 
 
 def _ts_to_str(ts_ms):
-    """Unix 毫秒时间戳转可读字符串"""
+    """Unix 毫秒时间戳转可读字符串（实测 API 返回字符串，需容错）"""
     if not ts_ms:
         return ""
+    try:
+        ts_ms = int(ts_ms)
+    except (TypeError, ValueError):
+        return ""
     import datetime
-    return datetime.datetime.fromtimestamp(ts_ms / 1000).strftime("%Y-%m-%d %H:%M")
+    try:
+        return datetime.datetime.fromtimestamp(ts_ms / 1000).strftime("%Y-%m-%d %H:%M")
+    except (OverflowError, OSError, ValueError):
+        return ""
 
 
 # ========== CLI 命令处理器 ==========
@@ -788,6 +1387,14 @@ def _cmd_create(uploader, args):
         content = _read_file(args.file)
     if not content:
         raise ValueError("必须提供内容（位置参数或 --file）")
+    transform = getattr(args, "transform_images", False)
+    dry_run = getattr(args, "dry_run", False)
+    if dry_run:
+        if not transform:
+            raise ValueError("--dry-run 需配合 --transform-images 使用")
+        _, _, report = _apply_transform(content, True)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return
     if getattr(args, 'dedup', False):
         existing = uploader.find_exact_title(args.title)
         if existing:
@@ -803,7 +1410,7 @@ def _cmd_create(uploader, args):
                     print(f"   [{n['note_id']}] {n['title']}")
                 print("   使用 upsert 命令可自动追加到已有笔记")
             sys.exit(2)
-    result = uploader.create_note(args.title, content)
+    result = uploader.create_note(args.title, content, transform_images=transform)
     if args.log_file:
         _log_note(args.log_file, args.title, result["note_id"])
     _output(result, args.json, "笔记创建成功")
@@ -815,7 +1422,15 @@ def _cmd_upsert(uploader, args):
         content = _read_file(args.file)
     if not content:
         raise ValueError("必须提供内容（位置参数或 --file）")
-    result = uploader.upsert_note(args.title, content)
+    transform = getattr(args, "transform_images", False)
+    dry_run = getattr(args, "dry_run", False)
+    if dry_run:
+        if not transform:
+            raise ValueError("--dry-run 需配合 --transform-images 使用")
+        _, _, report = _apply_transform(content, True)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return
+    result = uploader.upsert_note(args.title, content, transform_images=transform)
     if args.log_file:
         _log_note(args.log_file, args.title, result["note_id"])
     if args.json:
@@ -835,21 +1450,45 @@ def _cmd_append(uploader, args):
         content = _read_file(args.file)
     if not content:
         raise ValueError("必须提供内容（位置参数或 --file）")
-    result = uploader.append_note(args.note_id, content)
+    transform = getattr(args, "transform_images", False)
+    dry_run = getattr(args, "dry_run", False)
+    if dry_run:
+        if not transform:
+            raise ValueError("--dry-run 需配合 --transform-images 使用")
+        _, _, report = _apply_transform(content, True)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return
+    result = uploader.append_note(args.note_id, content, transform_images=transform)
     _output(result, args.json, f"内容已追加到笔记 {args.note_id}")
+
+
+def _cmd_image_url(uploader, args):
+    result = uploader.upload_note_image(args.src)
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print(f"✅ 图片已转存")
+        print(f"   URL:  {result['url']}")
+        print(f"   MIME: {result['mime']}")
 
 
 def _cmd_search(uploader, args):
     search_type = 0 if args.type == "title" else 1
     notes = uploader.search_notes(args.keyword, search_type)
+    # 实测服务端会忽略 start/end 上限返回全量，这里按 --limit 截断，避免淹没上下文
+    total = len(notes)
+    shown = notes[:max(1, args.limit)]
     if args.json:
-        print(json.dumps(notes, ensure_ascii=False, indent=2))
+        print(json.dumps(shown, ensure_ascii=False, indent=2))
     else:
         if not notes:
             print(f"未找到匹配「{args.keyword}」的笔记")
         else:
-            print(f"找到 {len(notes)} 条笔记：")
-            for n in notes:
+            head = f"找到 {total} 条笔记"
+            if total > len(shown):
+                head += f"，显示前 {len(shown)} 条（--limit 可调整）"
+            print(head + "：")
+            for n in shown:
                 ts = _ts_to_str(n.get("modify_time"))
                 print(f"  [{n['note_id']}] {n['title']}" + (f"  ({ts})" if ts else ""))
                 if n.get("folder_name"):
@@ -889,6 +1528,10 @@ def _cmd_read(uploader, args):
     content = uploader.get_note_content(args.note_id)
     if args.json:
         print(json.dumps({"note_id": args.note_id, "content": content}, ensure_ascii=False, indent=2))
+    elif not content:
+        # API 对无效 note_id 返回 code=0 + 空内容，需在应用层提示，避免静默无输出
+        print(f"⚠️ 笔记 {args.note_id} 内容为空；请确认 note_id 是否正确、是否为本人笔记")
+        sys.exit(2)
     else:
         print(content)
 
@@ -937,15 +1580,19 @@ def _cmd_kb_info(uploader, args):
     info = uploader.get_knowledge_base_info(args.kb_id)
     if args.json:
         print(json.dumps(info, ensure_ascii=False, indent=2))
-    else:
-        for kb_id, kb in info.items():
-            print(f"📚 {kb.get('name', kb_id)}")
-            if kb.get("description"):
-                print(f"   📝 {kb['description']}")
-            if kb.get("recommended_questions"):
-                print("   💡 推荐问题：")
-                for q in kb["recommended_questions"]:
-                    print(f"      - {q}")
+        return
+    if not info:
+        # API 对无效 ID 返回空 infos 且 code=0，需显式提示
+        print(f"⚠️ 未查到知识库 {args.kb_id}；请确认 ID 是否存在、是否有访问权限")
+        sys.exit(2)
+    for kb_id, kb in info.items():
+        print(f"📚 {kb.get('name', kb_id)}")
+        if kb.get("description"):
+            print(f"   📝 {kb['description']}")
+        if kb.get("recommended_questions"):
+            print("   💡 推荐问题：")
+            for q in kb["recommended_questions"]:
+                print(f"      - {q}")
 
 
 def _cmd_kb_ls(uploader, args):
@@ -962,21 +1609,27 @@ def _cmd_kb_ls(uploader, args):
             print("该目录下暂无内容")
         else:
             for item in items:
-                folder_id = item.get("folder_id")
-                if folder_id:
-                    # 文件夹
-                    fnum = item.get("file_number", 0)
-                    snum = item.get("folder_number", 0)
-                    print(f"  📁 {item.get('name', '?')}/  ({fnum} 个文件, {snum} 个子文件夹)")
+                media_id = item.get("media_id") or ""
+                media_type = item.get("media_type")
+                title = item.get("title") or "?"
+                # 实测：文件夹靠 media_type=99 识别，其 media_id 以 folder 开头；
+                # knowledge_list 不返回 folder_id，也没有 file_number/folder_number
+                if media_type == 99 or str(media_id).startswith("folder"):
+                    print(f"  📁 {title}/  [{media_id}]")
                 else:
-                    # 文件
-                    print(f"  📄 {item.get('title', '?')}  [{item.get('media_id', '')}]")
+                    label = MEDIA_TYPE_LABELS.get(media_type, "")
+                    suffix = f"  ({label})" if label else ""
+                    print(f"  📄 {title}  [{media_id}]{suffix}")
         if not result.get("is_end"):
             print("  --- 还有更多内容 ---")
 
 
 def _cmd_kb_upload(uploader, args):
-    result = uploader.upload_file_to_kb(args.file, args.kb_id, args.folder_id)
+    result = uploader.upload_file_to_kb(
+        args.file, args.kb_id, args.folder_id,
+        content_type=getattr(args, "content_type", None),
+        on_duplicate=getattr(args, "on_duplicate", "cancel"),
+    )
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
@@ -999,20 +1652,37 @@ def _cmd_kb_add_url(uploader, args):
 
 
 def _cmd_kb_media(uploader, args):
+    if getattr(args, "download", False):
+        result = uploader.download_media(args.media_id, output_dir=getattr(args, "out_dir", None))
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print(f"✅ 原文已下载")
+            print(f"   文件: {result['file_name']}")
+            print(f"   路径: {result['path']}")
+        return
     info = uploader.get_media_info(args.media_id)
     if args.json:
         print(json.dumps(info, ensure_ascii=False, indent=2))
+        return
+    mt = info.get("media_type")
+    if mt is None:
+        # 无效 media_id 时 API 仍返回 code=0 但 data 为空，不能落到"请用客户端"的提示
+        print(f"⚠️ 未查到媒体 {args.media_id}；请确认 media_id 是否正确（可用 `kb ls` 获取）")
+        sys.exit(2)
+    label = MEDIA_TYPE_LABELS.get(mt, "")
+    print(f"媒体类型: {mt}" + (f"（{label}）" if label else ""))
+    if info.get("url_info", {}).get("url"):
+        print(f"访问链接: {info['url_info']['url']}")
+        headers = info["url_info"].get("headers") or {}
+        if headers:
+            print(f"访问需带 Header: {', '.join(headers.keys())}")
+    elif info.get("notebook_ext_info", {}).get("notebook_id"):
+        nb_id = info["notebook_ext_info"]["notebook_id"]
+        print(f"关联笔记 ID: {nb_id}")
+        print("提示: 使用 `read` 命令读取笔记内容")
     else:
-        mt = info.get("media_type")
-        print(f"媒体类型: {mt}")
-        if info.get("url_info", {}).get("url"):
-            print(f"访问链接: {info['url_info']['url']}")
-        elif info.get("notebook_ext_info", {}).get("notebook_id"):
-            nb_id = info["notebook_ext_info"]["notebook_id"]
-            print(f"关联笔记 ID: {nb_id}")
-            print("提示: 使用 `read` 命令读取笔记内容")
-        else:
-            print("提示: 请使用 IMA 客户端查看原文")
+        print("提示: 该媒体没有可访问链接，请使用 IMA 客户端查看原文")
 
 
 def _cmd_kb_addable(uploader, args):
@@ -1056,7 +1726,7 @@ def main():
 
     # 兼容旧用法：两个位置参数即 create
     if len(sys.argv) >= 3 and not any(a in sys.argv for a in [
-        "create", "upsert", "append", "search", "list", "read", "kb", "-h", "--help"
+        "create", "upsert", "append", "search", "list", "read", "kb", "image-url", "-h", "--help"
     ]):
         title_argv = [sys.argv[0], "create", sys.argv[1]] + sys.argv[2:]
         sys.argv = title_argv
@@ -1082,6 +1752,8 @@ def main():
             _cmd_list(uploader, args)
         elif args.command == "read":
             _cmd_read(uploader, args)
+        elif args.command == "image-url":
+            _cmd_image_url(uploader, args)
         elif args.command == "kb":
             if args.kb_command is None:
                 parser.parse_args(["kb", "-h"])

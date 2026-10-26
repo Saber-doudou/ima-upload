@@ -1,6 +1,6 @@
 {
-  "version": "3.0.0",
-  "publishedAt": 1748851200000,
-  "readmeNoteId": "note_id_here",
-  "changelog": "v3.0: 整合官方 ima-skill 知识库模块（upload/add-url/media/search/list）、笔记浏览/读取、官方更新检测脚本"
+  "version": "3.3.0",
+  "publishedAt": 1792982218000,
+  "readmeNoteId": null,
+  "changelog": "v3.3.0: 整合官方 ima-skills 5 项能力缺口 + 返工修复 + 残余修缮。新增 --transform-images 插图转存内嵌（3MiB/魔数校验，体积超限与 content 相关报错自动降级分批 append_doc，业务错误不降级）与 image-url 单图换链（实测需 MCP 云代理会话，失败给降级指引）；kb media --download 原文落盘（预签名 URL 原样用防 403，文件名取 media_title，basename 收敛+落点断言防路径穿越+保留设备名 safe_ 前缀防吞数据）；图片签名校验；HTML/EPUB 上传（10MB/50MB）；上传安全门对齐官方 4 条（keep-copy 改名后复查重名+序号棘轮重试）；视频 MIME 黑名单；契约测试 32 项扩至 64 项。安全修复：download_media 路径穿越与保留设备名静默丢数据均已堵"
 }
