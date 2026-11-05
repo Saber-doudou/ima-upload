@@ -103,5 +103,3 @@ ima-openapi-clientid: <client_id>
 ima-openapi-apikey: <api_key>
 Content-Type: application/json; charset=utf-8
 ```
-
----
