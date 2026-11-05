@@ -1,6 +1,6 @@
 {
-  "version": "3.3.0",
+  "version": "3.4.0",
   "publishedAt": 1792982218000,
   "readmeNoteId": null,
-  "changelog": "v3.3.0: 整合官方 ima-skills 5 项能力缺口 + 返工修复 + 残余修缮。新增 --transform-images 插图转存内嵌（3MiB/魔数校验，体积超限与 content 相关报错自动降级分批 append_doc，业务错误不降级）与 image-url 单图换链（实测需 MCP 云代理会话，失败给降级指引）；kb media --download 原文落盘（预签名 URL 原样用防 403，文件名取 media_title，basename 收敛+落点断言防路径穿越+保留设备名 safe_ 前缀防吞数据）；图片签名校验；HTML/EPUB 上传（10MB/50MB）；上传安全门对齐官方 4 条（keep-copy 改名后复查重名+序号棘轮重试）；视频 MIME 黑名单；契约测试 32 项扩至 64 项。安全修复：download_media 路径穿越与保留设备名静默丢数据均已堵"
+  "changelog": "v3.4.0: 文档结构重构，无功能与代码逻辑变更。补 name/display_name/description 三项 frontmatter（此前无 frontmatter，平台按目录名注册并从正文前约 99 字截断作 description，路由描述成了表格碎片）；删「触发条件」章节（内容由 description 承接，对齐官方 Avoid Duplication）；CLI 逐命令示例下沉 references/cli.md（178 行）、Python API 与端点 Header 下沉 references/api.md（107 行）、已修复的历史坑迁 references/pitfalls.md（24 行）；正文 16,131 字符降至 8,746（-45.8%），落入官方正文 5k token 预算。命令保真校验：57 条命令、19 个参数、17 个子命令、22 个 API 方法、17 个端点零丢失；契约测试 64/64 通过"
 }

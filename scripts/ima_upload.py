@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-IMA上传工具 - Python封装版本 v3.3.0
+IMA上传工具 - Python封装版本 v3.4.0
 
 功能概览：
   笔记模块：create / upsert / append / search / list / read / image-url
@@ -1172,7 +1172,7 @@ class IMAError(Exception):
 
 def _build_parser():
     parser = argparse.ArgumentParser(
-        description="IMA笔记上传工具 v3.3.0（笔记+知识库）",
+        description="IMA笔记上传工具 v3.4.0（笔记+知识库）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 笔记操作：

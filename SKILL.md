@@ -1,4 +1,17 @@
-# IMA 笔记上传 Skill v3.3.0
+---
+name: ima-upload
+display_name: "IMA上传（本地版）"
+description: "IMA（腾讯 ima）云端笔记与知识库的本地直连上传技能。走 OpenAPI 直连、不需要 MCP 云代理会话，
+  适合批量、可脚本化、可归档的写入与检索。触发场景：把文件或网页写入 IMA 知识库、创建与追加笔记、
+  搜索笔记与知识库内容、浏览笔记本与知识库目录、读取笔记正文、把知识库文件原文落盘、把笔记关联进知识库。
+  用户可能这么说：帮我记一下、存到 IMA、传到知识库、归档到 IMA、同步到 IMA 云端、备份到云端、知识库里有没有某个东西、
+  搜一下知识库、把这篇文章收进知识库、列出我的笔记、读一下那篇笔记、把这个 PDF 或 Excel 或图片传上去。
+  涉及的格式包括 PDF、Word、PPT、Excel、CSV、Markdown、TXT、Xmind、HTML、EPUB、PNG/JPG/WebP 图片、
+  MP3/M4A/WAV/AAC 音频，以及网页链接和微信公众号文章。技能配置备份、L3 与 L2 流程的 IMA 归档环节也走本技能。
+  不适用：只需要把本地图片转成外链再嵌入时用官方 ima-skills（需云代理会话）；普通对话记忆整理用 memory-consolidate。"
+---
+
+# IMA 笔记上传 Skill v3.4.0
 
 腾讯 IMA 云端笔记 + 知识库管理工具。整合官方 ima-skill 知识库模块，保留本地独有优势。
 
@@ -26,17 +39,6 @@
 - 文件：`~/.config/ima/client_id`（32位字符串）
 - 文件：`~/.config/ima/api_key`
 - 环境变量：`IMA_CLIENT_ID` / `IMA_API_KEY`（或 `IMA_OPENAPI_CLIENTID` / `IMA_OPENAPI_APIKEY`）
-
-## 触发条件
-
-用户表达了以下意图之一：
-- 上传/保存/备份内容到 IMA
-- 把笔记存到 IMA / 上传到 IMA
-- 创建 IMA 笔记 / IMA 笔记上传
-- 同步到 IMA 云端
-- 上传文件到知识库 / 添加网页到知识库
-- 搜索知识库 / 浏览知识库
-- 查看笔记内容 / 列出笔记
 
 ---
 
@@ -116,155 +118,16 @@
 | 查找文件夹 | `kb find-folder "名称" --kb kb_id` |
 | 自动化调用（需获取 note_id） | 加 `--json` 返回纯 JSON，加 `--log FILE` 记录映射 |
 
-### 3. 典型调用示例
-
-```bash
-# Python CLI
-python ima_upload.py create "标题" "内容"
-python ima_upload.py upsert "标题" --file notes.md --json
-python ima_upload.py search "关键词" --json
-python ima_upload.py list
-python ima_upload.py read note_id_here
-
-# 知识库操作
-python ima_upload.py kb list --json
-python ima_upload.py kb upload report.pdf --kb kb_id_here
-python ima_upload.py kb add-url "https://example.com" --kb kb_id_here
-python ima_upload.py kb search "排期" --kb kb_id_here
-```
-
-```python
-# Python API（AI 内部调用）
-import sys
-sys.path.insert(0, "/path/to/ima-upload/scripts")
-from ima_upload import IMAUploader
-
-uploader = IMAUploader()
-
-# 笔记操作
-result = uploader.create_note("标题", "# 标题\n\n正文内容")
-result = uploader.upsert_note("标题", "内容")
-notes = uploader.search_notes("关键词")
-notebooks = uploader.list_notebooks()
-notes = uploader.list_notes("notebook_id")
-content = uploader.get_note_content("note_id")
-
-# 知识库操作
-kbs = uploader.list_knowledge_bases()
-result = uploader.upload_file_to_kb("report.pdf", "kb_id")
-result = uploader.import_urls("kb_id", ["https://example.com"])
-info = uploader.get_media_info("media_id")
-```
-
 ---
 
-## CLI 命令参考
+## 命令速查与上传安全门
 
-### 笔记操作
+日常调用按上文「确定调用方式」表走即可，它覆盖全部常用场景与关键参数。
+逐命令示例、非常用参数组合与边界说明见 `references/cli.md`，遇到下列情况再读：
+要用 `--log` / `--content-type` / `--limit` / `--type` / `--folder` 等非常用参数，
+或者第一次使用某个子命令、不确定它接受哪些参数。
 
-#### create — 创建新笔记
-
-```
-ima_upload.py create "标题" "内容"
-ima_upload.py create "标题" --file notes.md --json --log id_map.json
-ima_upload.py create "标题" "内容" --dedup
-ima_upload.py create "标题" --file notes.md --transform-images        # 插图内嵌
-ima_upload.py create "标题" --file notes.md --transform-images --dry-run  # 只出批次报告
-```
-
-#### upsert — 智能创建/追加（推荐）
-
-```
-ima_upload.py upsert "标题" --file notes.md
-ima_upload.py upsert "标题" "内容" --json
-ima_upload.py upsert "标题" --file notes.md --transform-images
-```
-
-#### append — 追加内容
-
-```
-ima_upload.py append "note_id_here" "追加的段落"
-ima_upload.py append "note_id_here" --file update.md --json
-ima_upload.py append "note_id_here" --file update.md --transform-images
-```
-
-#### image-url — 单图转存换链
-
-```
-ima_upload.py image-url /path/img.png
-ima_upload.py image-url "data:image/png;base64,..." --json
-```
-
-> 对应官方 note-images 的 `--url` 模式（`upload_temp_file` → `get_access_url`）。
-> **实测限制**：该双端点需要 MCP 云代理会话，本地 client_id 调用报「session ID is required」，
-> 失败时会给出明确指引改用 `--transform-images` 内嵌。插图批量处理一律用 `--transform-images`。
-
-#### search — 搜索笔记
-
-```
-ima_upload.py search "关键词"
-ima_upload.py search "关键词" --type content --json
-ima_upload.py search "关键词" --limit 5      # 默认 20，服务端会返回全量匹配
-```
-
-#### list — 列出笔记本/笔记
-
-```
-ima_upload.py list                        # 列出所有笔记本
-ima_upload.py list --nb notebook_id       # 列出笔记本中的笔记
-ima_upload.py list --json                 # JSON 输出
-```
-
-#### read — 读取笔记正文
-
-```
-ima_upload.py read note_id                # 读取笔记内容
-ima_upload.py read note_id --json         # JSON 输出
-```
-
-### 知识库操作
-
-#### kb list — 列出知识库
-
-```
-ima_upload.py kb list                     # 列出所有知识库
-ima_upload.py kb list --json
-```
-
-#### kb search — 搜索知识库/内容
-
-```
-ima_upload.py kb search "关键词"           # 搜索知识库列表
-ima_upload.py kb search "关键词" --kb id   # 在指定知识库中搜索内容
-```
-
-#### kb info — 知识库详情
-
-```
-ima_upload.py kb info kb_id
-ima_upload.py kb info kb_id --json
-```
-
-#### kb ls — 浏览知识库内容
-
-```
-ima_upload.py kb ls kb_id
-ima_upload.py kb ls kb_id --folder folder_id
-ima_upload.py kb ls kb_id --limit 50 --json
-```
-
-#### kb upload — 上传文件到知识库
-
-```
-ima_upload.py kb upload report.pdf --kb kb_id
-ima_upload.py kb upload data.xlsx --kb kb_id --folder folder_id --json
-ima_upload.py kb upload report.pdf --kb kb_id --on-duplicate keep-copy   # 重名保留时间戳副本
-ima_upload.py kb upload downloaded_file --kb kb_id --content-type application/pdf
-```
-
-支持的文件类型：PDF, Word, PPT, Excel, CSV, Markdown, PNG/JPG/WebP, TXT, Xmind, MP3/M4A/WAV/AAC, HTML, EPUB
-
-##### ⛔ 文件上传安全门（与官方 ima-skills 对齐，强制执行）
+### 文件上传安全门（与官方 ima-skills 对齐，强制执行）
 
 1. **预检失败即停**：类型/大小/图片签名校验不过立即拒绝，不询问是否继续，不发起任何请求。
 2. **title 原样等于 file_name**（含扩展名），不得改名、不得加前缀后缀。
@@ -273,132 +136,19 @@ ima_upload.py kb upload downloaded_file --kb kb_id --content-type application/pd
 
 图片签名校验（media_type=9）：读文件头 12 字节比对魔数（PNG `89 50 4E 47 0D 0A 1A 0A`、JPEG `FF D8 FF`、WEBP `RIFF....WEBP`），签名与扩展名不符时拦截。大小限制：HTML 10MB、EPUB 50MB、图片 30MB、Markdown/Excel/TXT/Xmind 10MB、其余 200MB。
 
-#### kb add-url — 添加网页/微信文章
+### 返回语义补充（自 v3.3.0 起）
 
-```
-ima_upload.py kb add-url "https://example.com" --kb kb_id
-ima_upload.py kb add-url "https://mp.weixin.qq.com/s/xxx" --kb kb_id
-ima_upload.py kb add-url url1 url2 url3 --kb kb_id
-```
-
-#### kb media — 获取媒体信息 / 原文落盘
-
-```
-ima_upload.py kb media media_id           # 获取媒体信息（含访问链接）
-ima_upload.py kb media media_id --json
-ima_upload.py kb media media_id --download --out ./downloads   # 原文落盘（保留原文件名）
-```
-
-> `--download` 通过 `url_info` 请求原文并落盘，文件名优先取 URL 的 `media_title`。
-> **实测注意**：`url_info.url` 是带 `sign` 的预签名链接，查询串**不能追加任何参数**（会 403）；
-> 脚本已自动识别签名链接并原样使用，仅未签名 URL 才追加官方的
-> `response-content-disposition=attachment;filename` 约定。无链接/笔记类型会给出对应指引。
-> **安全**：文件名强制 basename 收敛并剔除 Windows 非法字符，Windows 保留设备名（CON/NUL/PRN 等）
-> 加 `safe_` 前缀改写（防写入导向设备静默吞数据），落盘前校验落点在目标目录内，
-> 恶意 `media_title`（含 `../`、绝对路径）无法写穿 `--out` 目录。
-
-#### kb addable — 获取可添加的知识库列表
-
-```
-ima_upload.py kb addable                  # 列出用户有权限添加的知识库
-ima_upload.py kb addable --json
-```
-
-#### kb add-note — 将笔记关联到知识库
-
-```
-ima_upload.py kb add-note note_id "标题" --kb kb_id
-ima_upload.py kb add-note note_id "标题" --kb kb_id --json
-```
-
-#### kb find-folder — 按名称查找知识库中的文件夹
-
-```
-ima_upload.py kb find-folder "文件夹名" --kb kb_id
-ima_upload.py kb find-folder "文件夹名" --kb kb_id --json
-```
-
----
-
-## Python API
-
-```python
-from ima_upload import IMAUploader
-
-uploader = IMAUploader()
-
-# 笔记
-uploader.create_note("标题", "内容", folder_id=None, transform_images=False)
-uploader.upsert_note("标题", "内容", transform_images=False)  # 智能创建/追加
-uploader.append_note("note_id", "追加内容", transform_images=False)
-uploader.search_notes("关键词", search_type=0)  # 0=标题, 1=正文
-uploader.find_exact_title("标题")  # 精确查找同名笔记
-uploader.list_notebooks()  # 列出笔记本
-uploader.list_notes("notebook_id", limit=20)  # 列出笔记
-uploader.get_note_content("note_id")  # 读取笔记正文
-uploader.upload_note_image("/path/img.png")  # 单图换链（需云端会话）
-
-# 知识库
-uploader.list_knowledge_bases()
-uploader.search_knowledge_bases("关键词")
-uploader.get_knowledge_base_info("kb_id")
-uploader.get_knowledge_list("kb_id", folder_id=None)
-uploader.search_knowledge("关键词", "kb_id")
-uploader.upload_file_to_kb("file.pdf", "kb_id", on_duplicate="cancel")  # keep-copy=时间戳副本
-uploader.download_media("media_id", output_dir="./dl")  # 原文落盘
-uploader.import_urls("kb_id", ["https://..."])
-uploader.get_media_info("media_id")
-uploader.check_repeated_names("kb_id", [("file.pdf", 1)])
-uploader.get_addable_knowledge_bases()  # 可添加的知识库
-uploader.add_note_to_kb("note_id", "标题", "kb_id")  # 笔记关联到知识库
-uploader.find_folder("文件夹名", "kb_id")  # 查找文件夹
-```
-
-返回语义补充（v3.3.0）：
 - `create_note` / `append_note` / `upsert_note` 走 transform 路径时，若 inline 写入报错且自动降级分批成功，返回值带 `degraded: "inline→batched"` 标记；仅 content 相关错误才降级，业务错误（敏感词/权限/配额等）原样抛出不重试。
 - `create_note_batched` / `append_note_batched` / `_write_note_batches` 传入空 `batches` 抛 `IMAError("batches 不能为空（无可写入内容）")`，不裸抛 IndexError。
 - `download_media` 返回的 `file_name` 是经 `_safe_filename` 清洗后的名字（basename 收敛、剔非法字符、Windows 保留设备名加 `safe_` 前缀），与实际落盘名一致（重名时间戳后缀除外，`path` 字段为准）。
 
----
+### 资源文件
 
-## API 端点
-
-### 笔记模块
-
-| 操作 | 端点 | 方法 |
-|------|------|------|
-| 创建笔记 | `openapi/note/v1/import_doc` | POST |
-| 追加笔记 | `openapi/note/v1/append_doc` | POST |
-| 搜索笔记 | `openapi/note/v1/search_note` | POST |
-| 笔记本列表 | `openapi/note/v1/list_notebook` | POST |
-| 笔记列表 | `openapi/note/v1/list_note` | POST |
-| 读取内容 | `openapi/note/v1/get_doc_content` | POST |
-
-### 知识库模块
-
-| 操作 | 端点 | 方法 |
-|------|------|------|
-| 创建媒体 | `openapi/wiki/v1/create_media` | POST |
-| 添加知识 | `openapi/wiki/v1/add_knowledge` | POST |
-| 知识库信息 | `openapi/wiki/v1/get_knowledge_base` | POST |
-| 内容列表 | `openapi/wiki/v1/get_knowledge_list` | POST |
-| 搜索内容 | `openapi/wiki/v1/search_knowledge` | POST |
-| 搜索知识库 | `openapi/wiki/v1/search_knowledge_base` | POST |
-| 重名检查 | `openapi/wiki/v1/check_repeated_names` | POST |
-| 导入URL | `openapi/wiki/v1/import_urls` | POST |
-| 媒体信息 | `openapi/wiki/v1/get_media_info` | POST |
-| 图片转存换链（需云端会话） | `openapi/mcp_cloud_agent/upload_temp_file` | POST |
-| 换链取访问 URL（需云端会话） | `openapi/mcp_cloud_agent/get_access_url` | POST |
-
----
-
-## Header 格式
-
-```
-ima-openapi-clientid: <client_id>
-ima-openapi-apikey: <api_key>
-Content-Type: application/json; charset=utf-8
-```
+| 文件 | 包含什么 | 什么时候读 |
+|------|---------|-----------|
+| `references/cli.md` | 每个子命令的完整示例、参数组合、边界说明 | 用到非常用参数，或第一次用某个子命令 |
+| `references/api.md` | Python API 方法表、HTTP 端点、Header 格式 | 用 Python 直接调用脚本，或排查请求层 / 鉴权问题 |
+| `references/pitfalls.md` | 已修复的历史坑与脚本实现取舍 | 怀疑踩到已知问题，或要改脚本实现时 |
 
 ---
 
@@ -444,28 +194,18 @@ dry-run、换链请求体与 session 降级）、空批防御、`EXT_MAP`/`SIZE_
 
 ## 踩坑记录
 
+只列会影响调用决策的坑。脚本内部已修复的实现细节见 `references/pitfalls.md`，
+排查疑似已修问题时再读。
+
 | 坑 | 原因 | 解决 |
 |----|------|------|
-| PowerShell 中文乱码 | PS5.1 默认 GBK | 脚本已带 UTF-8 BOM；Body 需转字节数组 |
-| `clientID or apiKey is empty` | header 名错误 | 用 `ima-openapi-clientid`（全小写）|
-| 凭证读不到 | BOM 或空格 | 自动 strip() + BOM 跳过；尝试多路径回退 |
-| 内容里标题重复 | `create_note` 自动加了 `# 标题` | v2 已移除自动前缀，content 直接写入 |
-| Git Bash 找不到 Python | 环境限制 | 改用 PowerShell 封装脚本 |
-| 文件内容乱码 | 文件是 GBK 编码 | 自动尝试 UTF-8 → GBK → Latin-1 |
 | `/tmp/` 路径报"文件不存在" | Git Bash `/tmp/` Python 不识别 | 用 `realpath /tmp/x.md` 获取 Windows 路径 |
 | 重复创建同名笔记 | `create` 无去重 | 用 **`upsert`**（同名追加）或 `create --dedup` |
-| COS 上传超时 | 大文件超 120s | 默认 timeout 300s，大文件可自行调整 |
 | **`create` 多行内容标题被覆盖** | bash 多行字符串中首行被当标题 | **用 `upsert "标题" --file 文件`**（标题和内容分离），不要用 `create "标题" "多行内容"` 传多行 |
 | **知识库列表全为 null** | `search_knowledge_base` 实测返回 `kb_id`/`kb_name`，官方 api.md 却写 `id`/`name` | 已由 `_normalize_kb` 双字段兼容；**新接口以实测为准，不要只信文档** |
-| **文件夹显示成文件图标** | `get_knowledge_list` 不返回 `folder_id`，文件夹靠 `media_type=99` 识别 | 判 `media_type==99` 或 `media_id` 以 `folder` 开头 |
-| **`find-folder` 返回错的 ID** | 曾把 `parent_folder_id`（父目录）当文件夹自身 ID | 文件夹自身 ID 就是其 `media_id`；`parent_folder_id` 只表示所属目录 |
-| **`list`/`search` 时间显示报错** | API 的 `create_time`/`modify_time` 是字符串，不是数字 | `_ts_to_str` 先 `int()` 转换再格式化 |
-| **`search` 一次返回上百条** | 服务端忽略 `start`/`end` 上限 | 本地按 `--limit` 截断（默认 20） |
 | **`search` 结果数不可用于统计** | 服务端返回不全：搜「备份」只回 143 篇，`list --nb` 遍历实际超 248 篇 | 统计一律用 `list --nb` 遍历；`search` 只用于定位单条 |
 | **`list --nb --limit` 超过 20 返回空** | `list_note` 单页上限 20，超过静默返回空且 code=0 | 已由 `list_notes` 按偏移量自动翻页；`cursor` 是偏移量不是游标 |
-| **`list_note` 响应没有 `next_cursor`** | 只有 `is_end` | 翻页需自行累加已取条数作为下一轮 `cursor` |
 | **给原文链接追加下载参数变 403** | `url_info.url` 是带 `sign` 的预签名链接，查询串含 `media_title`/`response-content-type`，追加任何参数都破坏签名 | 签名 URL 原样用；文件名从 `media_title` 取；仅未签名 URL 才追加官方 disposition 约定 |
-| **图片换链报 session ID is required** | `mcp_cloud_agent/upload_temp_file` 等双端点需 MCP 云代理会话，本地 client_id 不支持 | 换链失败会明确提示；插图批量处理改用 `--transform-images` 内嵌 |
 
 ---
 
