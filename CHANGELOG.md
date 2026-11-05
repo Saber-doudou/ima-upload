@@ -10,8 +10,8 @@
 
 - **补 frontmatter（`name` / `display_name` / `description`）**：此前本文件无任何 frontmatter。实测平台在缺失时按目录名注册技能、并从正文前约 99 字截取 description，实际生成的描述末尾停在 `| 模块 | 功能 | `，是一段残缺表格，等于丧失了路由信号。现显式声明 description（481 字符），覆盖触发场景、口语说法、文件类型、业务场景与排除边界。
 - **删除「触发条件」章节**：7 条触发意图已全部并入 description，同一信息不再两处维护，对齐官方「Avoid Duplication: Information should exist in either SKILL.md or reference files, not both」。
-- **CLI 逐命令示例下沉 `references/cli.md`**（178 行）：正文仅保留「确定调用方式」场景表、文件上传安全门、返回语义补充与资源清单表。原「CLI 命令参考」下 17 个 `####` 子命令块整体搬移，未改写任何命令、参数或引号。
-- **Python API / API 端点 / Header 格式下沉 `references/api.md`**（107 行）。
+- **CLI 逐命令示例下沉 `references/cli.md`**（176 行，标题层级已上提一级）：正文仅保留「确定调用方式」场景表、文件上传安全门、返回语义补充与资源清单表。原「CLI 命令参考」下 17 个 `####` 子命令块整体搬移，未改写任何命令、参数或引号。
+- **Python API / API 端点 / Header 格式下沉 `references/api.md`**（105 行）。
 - **踩坑记录按性质分流**：20 条中保留 7 条影响调用决策的操作约束（`/tmp/` 路径、`upsert` 去重、多行内容用 `--file`、字段名以实测为准、统计用 `list --nb`、单页 20 上限、签名 URL 不可追加参数），其余 13 条「脚本已修复」的实现细节迁 `references/pitfalls.md`（24 行）。
 - 新增「资源文件」三列表，按官方「参考文件要说清什么时候读」要求标注各 references 的读取时机。
 - 正文 16,131 → 8,746 字符（-45.8%），221 行。按同口径折算约 6,600 → 3,600 tokens，落入官方 SKILL.md 正文 5k token 预算内。
