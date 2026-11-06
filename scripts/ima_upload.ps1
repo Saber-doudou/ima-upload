@@ -43,6 +43,19 @@ $ErrorActionPreference = "Stop"
 # 会把 -Json 的机器可读输出污染成非 JSON。关掉，顺带显著加快大响应。
 $ProgressPreference = "SilentlyContinue"
 
+# 与 Python 侧同源：版本号从 _meta.json 读，不在这里再写一份常量。
+# 用 scriptblock 方式调用时 $PSScriptRoot 可能为空，降级为 unknown（不影响功能，只影响 ctx 头）。
+$SkillVersion = "unknown"
+try {
+    $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Definition }
+    if ($scriptDir) {
+        $metaPath = Join-Path (Split-Path $scriptDir -Parent) "_meta.json"
+        if (Test-Path $metaPath) {
+            $SkillVersion = (Get-Content $metaPath -Raw -Encoding UTF8 | ConvertFrom-Json).version
+        }
+    }
+} catch { }
+
 # 统一控制台输出编码。PS5.1 默认按 GBK 编码输出，中文 JSON 会乱码；
 # 设成 UTF-8 后可直接 Write-Output 字符串，不必再手工转字节数组。
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
@@ -96,6 +109,8 @@ function Invoke-IMAApi {
         "Content-Type"          = "application/json; charset=utf-8"
         "ima-openapi-clientid" = $ClientId
         "ima-openapi-apikey"   = $ApiKey
+        # 与 Python 侧一致：官方每个请求都带 skill_version（ima_api.cjs:72）
+        "ima-openapi-ctx"      = "skill_version=$SkillVersion"
     }
     $utf8Bytes = [System.Text.Encoding]::UTF8.GetBytes(($Body | ConvertTo-Json -Depth 10))
     try {
@@ -103,10 +118,29 @@ function Invoke-IMAApi {
         # Invoke-RestMethod 在 PS5.1 上对「响应头没写 charset」的 JSON 默认按 ISO-8859-1 解析，
         # 中文会在解析阶段就变成 mojibake（实跑症状：输出里出现 "è®°å½æ¶é´" 这类拉丁乱码），
         # 且转换发生在返回对象之后，外层再怎么设编码都救不回来。
-        $resp = Invoke-WebRequest -Uri $url -Method Post -Body $utf8Bytes -Headers $headers -TimeoutSec 30 -UseBasicParsing
+        # -MaximumRedirection 0：requests 侧已 allow_redirects=False，ps1 若不设会带着
+        # clientid/apikey 两个 header 跟随 302 到别的地址。
+        $resp = Invoke-WebRequest -Uri $url -Method Post -Body $utf8Bytes -Headers $headers -TimeoutSec 30 -UseBasicParsing -MaximumRedirection 0
         $json = [System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray())
         return ($json | ConvertFrom-Json)
     } catch {
+        # 4xx/5xx 的响应体里通常带真实业务 code/msg，直接 throw 字符串会把它们丢掉。
+        # 这里尽力解析响应体并原样返回，交给调用方的 code 判定统一报错。
+        $webResp = $_.Exception.Response
+        if ($webResp) {
+            try {
+                $stream = $webResp.GetResponseStream()
+                $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
+                $raw = $reader.ReadToEnd()
+                $reader.Close()
+                if ($raw) {
+                    $parsed = $raw | ConvertFrom-Json
+                    if ($null -ne $parsed.code) { return $parsed }
+                }
+            } catch {
+                # 响应体不是 JSON（如 302 空体），落到下面的统一报错
+            }
+        }
         throw "API请求失败: $_"
     }
 }
@@ -156,9 +190,9 @@ switch ($Command) {
             exit 1
         }
 
-        # 与 Python 侧 _with_note_heading 同口径：import_doc 没有 title 字段，
-        # 标题由 content 首个 Markdown 标题推导。content 已带标题时不重复加。
-        if ($content -notmatch '(?m)^\s*#\s+\S') {
+        # 只认「content 以 Markdown 一级标题开头」，与 Python 侧 _MD_HEADING_RE 的 ^ 语义一致。
+        # 原先用 (?m) 逐行匹配，content 中段出现标题时 ps1 不加前缀、Python 加，两条通道写入内容不同。
+        if ($content -notmatch '^\s*#\s+\S') {
             $content = "# $title`r`n`r`n$content"
         }
 
@@ -239,12 +273,19 @@ switch ($Command) {
             exit 1
         }
         $keyword  = $Arg1
-        $searchType = 0
-        if ($Type -eq "content") { $searchType = 1 }
+        # 官方 QueryInfo 有 title / content 两个字段，SearchType=1 是正文检索。
+        # 原先只改了 search_type 却仍构造 title 键，等于「正文搜索还在搜标题」。
+        if ($Type -eq "content") {
+            $searchType = 1
+            $queryInfo  = @{ content = $keyword }
+        } else {
+            $searchType = 0
+            $queryInfo  = @{ title = $keyword }
+        }
 
         $body = @{
             search_type = $searchType
-            query_info  = @{ title = $keyword }
+            query_info  = $queryInfo
             start       = 0
             end         = 20
         }

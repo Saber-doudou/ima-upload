@@ -2,6 +2,51 @@
 
 本文件记录 ima-upload 技能的版本变更。版本号遵循三段式（MAJOR.MINOR.PATCH），每段不超过一位数。
 
+## v3.4.7 — 2026-11-07
+
+第二轮审查修复：2 个会造成重复笔记 / 报告失真的缺陷 + ps1 四处与 Python 侧不对齐 + 1 条恒通过的空断言。契约测试 79 → 81 项。
+
+### 修复（P0）
+
+- **`upsert` 在 content 自带不同标题时堆重复笔记**：`_with_note_heading` 见 content 已有标题就原样返回，但服务端标题取自 content，而 `upsert` 仍按**传入 title** 查重，两者不一致就永远命不中、每次都新建。`upsert "标题" --file notes.md` 是文档推荐用法，md 自带 `# 标题` 极常见。
+  修复：新增 `_effective_title(title, content)`——content 以一级标题开头时取该标题，否则取入参，作为唯一裁决点；`upsert_note` 按它查重、`create_note` / `create_note_batched` 按它返回 `title`。
+- **`--dry-run` 报告与真实写入脱节（v3.4.5 引入）**：干跑对原始 content 算批次，而 `create_note` 会先前置 `# 标题`，少算一个标题行；体积卡在临界值时干跑报 `inline`、真实却走 `batched`。
+  修复：`_cmd_create` / `_cmd_upsert` 的 dry-run 分支先调 `_with_note_heading` 再算批次。`upsert` 因无法离线判断走 create 还是 append，统一按 create 估算并在报告里加 `note` 字段说明。
+
+### 修复（ps1 与 Python 侧对齐）
+
+| 位置 | 问题 | 修复 |
+|---|---|---|
+| search 分支 | `-Type content` 时 `query_info` 仍构造 `title` 键，等于「正文搜索还在搜标题」 | 按类型构造 `content` / `title` 键（官方 `QueryInfo` 两字段都有，`SearchType=1` 为正文检索） |
+| create 分支 | 标题判定用 `(?m)^\s*#\s+\S` 逐行匹配，Python 侧 `^` 只锚定串首，中段有标题时两通道写入不同 | 去掉 `(?m)`，与 Python 同口径 |
+| `Invoke-IMAApi` | `Invoke-WebRequest` 默认跟随 302，会带 clientid/apikey 到重定向目标；且未带 `ima-openapi-ctx` | 加 `-MaximumRedirection 0`；补 `ima-openapi-ctx` 头（版本从 `_meta.json` 读） |
+| `catch` 分支 | 直接 `throw` 字符串，4xx/5xx 响应体里的真实业务 code/msg 丢失 | 尽力解析响应体并原样返回，交给调用方统一按 `code` 报错 |
+
+### 修复（测试质量）
+
+- **「content-type 端到端」是恒通过空断言**：`except Exception: return` + 末尾裸 `return` 让任何结果都判通过。重写为断言「预检必须放行到 `check_repeated_names`」+「`create_media` 的 `content_type` 已归一化为 `application/pdf`」，修复前会零请求直接失败。
+
+### 文档
+
+- `README.md`：测试项数 74 → 81（版本号每版同步了，测试数一直漏更）。
+- `references/api.md`：Header 段补 `ima-openapi-ctx`（v3.4.2 新增但文档漏记）。
+- `SKILL.md`：新增「标题与正文的关系」小节，写明 `import_doc` 无 `title` 字段、create 会在首行写 `# 标题`、真实标题取自 content、`append` 不写标题行。此前文档没有这条语义，AI 按旧文档理解正好会踩中 upsert 重复建笔记。
+
+### 细节
+
+- `_parse_response` 改为 `resp.content.decode("utf-8")`，与 urllib 分支显式解码口径一致，不依赖 requests 猜编码。
+- `download_media` 重名上限文案「99 个序号」改正为「100 个候选名」（序号 0 到 99）。
+- `_clean_title` 压平标题里的换行与连续空白，避免标题含换行时插进正文破坏 Markdown 结构。
+
+### 契约测试
+
+79 → **81 项**。新增：`upsert_note` 按 content 内标题查重（模拟服务端按 content 推导标题）、`create --dry-run` 与真实写入字节数一致。两条均已用 `git stash` 回退主脚本验过红态（79/81，报错分别为「第二次应追加，实际 created」和「干跑 60 字节 != 真实写入 71 字节」）。
+
+### 已知限制（实跑暴露，未修）
+
+- **同一标题连续 `upsert` 仍会重复建笔记**：标题源已统一（返回的 `title` 正确、查重用的也是它），但 `search_note` 有索引延迟——新建笔记要过几秒到十几秒才能被搜到。实测连发两次 `upsert` 同一标题：第一次 `created`，第二次仍 `created`，一分钟后按标题能查到 2 条。
+  这是服务端最终一致性，本地无法在不上代价的前提下消除（加 sleep 只能缩小窗口、不能关闭，且拖慢每次调用）。已写入 SKILL.md 踩坑记录：同标题不要连发，批量前先 `search` 确认，或 `create` 后自行记录 `note_id`。
+
 ## v3.4.6 — 2026-11-07
 
 补全 v3.4.5 漏掉的一条通道：`ps1` 的 `create` 同样在传 `title`、content 不带标题行。

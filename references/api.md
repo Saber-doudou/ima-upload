@@ -102,5 +102,8 @@ info = uploader.get_media_info("media_id")
 ```
 ima-openapi-clientid: <client_id>
 ima-openapi-apikey: <api_key>
+ima-openapi-ctx: skill_version=<version>
 Content-Type: application/json; charset=utf-8
 ```
+
+`ima-openapi-ctx` 与官方 `ima_api.cjs:72` 对齐，每个请求都带；版本号从 `_meta.json` 读取，读不到为 `unknown`。两条传输通道（requests / urllib）与 PowerShell 通道都会带。

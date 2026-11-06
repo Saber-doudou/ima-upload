@@ -1475,7 +1475,8 @@ def _():
 
 @case("content-type 带参数/大写时不再误判为不支持的类型")
 def _():
-    # .bin 不在 EXT_MAP；只有归一化后命中 content-type，才不会退回扩展名判定
+    # .bin 不在 EXT_MAP；只有归一化后命中 content-type，才不会退回扩展名判定。
+    # 断言方式：预检必须放行到「重名检查」这一步。修复前会在类型判定处直接抛错、零请求。
     with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as f:
         f.write(b"%PDF-1.4\n")
         path = f.name
@@ -1486,10 +1487,15 @@ def _():
         except m.IMAError as e:
             expect("不支持的文件类型" not in (e.msg or ""),
                    f"归一化失败，退回了扩展名判定: {e.msg}")
-            return
         except Exception:
-            return
-        return
+            pass
+        paths = [c["path"] for c in u.calls]
+        expect(any(p.endswith("check_repeated_names") for p in paths),
+               f"未通过类型预检（已发请求: {paths}）——content-type 归一化未生效")
+        creates = [c for c in u.calls if c["path"].endswith("create_media")]
+        if creates:
+            expect(creates[0]["body"]["content_type"] == "application/pdf",
+                   f"create_media 的 content_type 未归一化: {creates[0]['body']['content_type']}")
     finally:
         Path(path).unlink()
 
@@ -1526,6 +1532,51 @@ def _():
     expect("title" not in body, "import_doc 不应再传 title 字段")
     expect(body["content"].startswith("# 标题C\n\n"),
            f"首批未带标题行: {body['content']!r}")
+
+
+@case("upsert_note 按 content 内标题查重（防重复建笔记）")
+def _():
+    u = FakeUploader()
+    server_title = {}
+
+    def fake_request(path, body, timeout=30):
+        u.calls.append({"path": path, "body": body})
+        if path.endswith("search_note"):
+            t = server_title.get("title")
+            items = [{"note_book_info": {"note_id": "n1", "title": t}}] if t else []
+            return {"code": 0, "data": {"search_note_infos": items}}
+        if path.endswith("import_doc"):
+            server_title["title"] = body["content"].split("\n", 1)[0].lstrip("# ").strip()
+            return {"code": 0, "data": {"note_id": "n1"}}
+        return {"code": 0, "data": {}}
+
+    u._request = fake_request
+    first = u.upsert_note("标题A", "# 标题B\n\n正文")
+    second = u.upsert_note("标题A", "# 标题B\n\n正文")
+    expect(first["action"] == "created", f"首次应新建: {first['action']}")
+    expect(second["action"] == "appended",
+           f"第二次应追加，实际 {second['action']}——查重用了传入 title 而非服务端真实标题")
+    expect(second["title"] == "标题B", f"返回值应为服务端真实标题: {second['title']}")
+
+
+@case("create --dry-run 报告与真实写入同源（含标题行）")
+def _():
+    import contextlib
+    import io as _io
+    import json as _json
+
+    body = "内容" * 10
+    u = FakeUploader()
+    args = type("A", (), {"title": "标题D", "content": body, "file": None,
+                          "transform_images": True, "dry_run": True,
+                          "json": True, "dedup": False, "log_file": None})()
+    buf = _io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        m._cmd_create(u, args)
+    report = _json.loads(buf.getvalue())
+    _, _, real = m._apply_transform(m._with_note_heading("标题D", body), True)
+    expect(report["total_bytes"] == real["total_bytes"],
+           f"干跑 {report['total_bytes']} 字节 != 真实写入 {real['total_bytes']} 字节")
 
 
 def main():

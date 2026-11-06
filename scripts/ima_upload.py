@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-IMA上传工具 - Python封装版本 v3.4.6
+IMA上传工具 - Python封装版本 v3.4.7
 
 功能概览：
   笔记模块：create / upsert / append / search / list / read / image-url
@@ -266,6 +266,28 @@ _NOTE_IMAGE_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".we
 
 
 _MD_HEADING_RE = re.compile(r"^\s*#\s+\S")
+_TITLE_LINE_RE = re.compile(r"^\s*#\s+(.+?)\s*$")
+
+
+def _clean_title(title):
+    """标题会被写进正文首行，换行会破坏 Markdown 结构，先压平。"""
+    return re.sub(r"\s+", " ", str(title or "")).strip()
+
+
+def _effective_title(title, content):
+    """
+    返回服务端最终会采用的标题。
+
+    服务端不看 `title` 字段（ImportNoteReq 里没有），只从 content 的首个
+    Markdown 一级标题推导。所以当 content 自带 `# 别的标题` 时，真实标题是那个，
+    不是命令行传的 title——`upsert` 若仍按传入 title 查重就会永远查不到，
+    每次都走新建，堆出重复笔记。
+
+    统一在此处裁决，供查重与返回值共用。
+    """
+    first_line = (content or "").lstrip().split("\n", 1)[0]
+    m = _TITLE_LINE_RE.match(first_line)
+    return m.group(1).strip() if m else _clean_title(title)
 
 
 def _with_note_heading(title, content):
@@ -279,12 +301,12 @@ def _with_note_heading(title, content):
       - `find_exact_title` 永远匹配不到，`upsert` 因此每次都新建，堆出重复笔记。
     v2 曾因「内容里标题重复」把自动前置标题删掉，那次是误判——那个标题行是必须的。
 
-    已带 Markdown 标题时原样返回，不插入第二个标题。
+    已带 Markdown 标题时原样返回，不插入第二个标题（此时真实标题见 `_effective_title`）。
     """
     body = content or ""
     if _MD_HEADING_RE.match(body):
         return body
-    return f"# {title}\n\n{body}"
+    return f"# {_clean_title(title)}\n\n{body}"
 
 
 def _normalize_content_type(raw):
@@ -550,7 +572,12 @@ class IMAUploader:
 
     def _parse_response(self, resp):
         """解析 requests 响应对象"""
-        return self._parse_payload(resp.text)
+        # 明确按 UTF-8 解码，与 urllib 分支口径一致；不依赖 requests 按响应头猜编码
+        try:
+            raw = resp.content.decode("utf-8", errors="replace")
+        except Exception:
+            raw = resp.text
+        return self._parse_payload(raw)
 
     # ==================== 笔记模块 ====================
 
@@ -568,6 +595,9 @@ class IMAUploader:
         """创建新笔记。transform_images=True 时先内嵌图片；超限或写入报错自动降级分批"""
         self._validate_utf8(title, "title")
         self._validate_utf8(content, "content")
+        # 真实标题由服务端从 content 首个 Markdown 标题推导，这里先算出唯一答案，
+        # 供返回值与 upsert 查重使用（否则传入 title 与 content 标题不一致时会重复建笔记）。
+        effective = _effective_title(title, content)
         # 标题写进正文首行：官方 import_doc 没有 title 字段，标题由首个 Markdown 标题推导。
         # 放在入口处前置，后续分批/插图处理都自然带上，不用每处再补。
         content = _with_note_heading(title, content)
@@ -577,7 +607,7 @@ class IMAUploader:
                 body["folder_id"] = folder_id
             result = self._request("openapi/note/v1/import_doc", body)
             note_id = result.get("data", {}).get("note_id", "")
-            return {"note_id": note_id, "title": title}
+            return {"note_id": note_id, "title": effective}
 
         transformed, batches, _ = _apply_transform(content, True)
         if batches:
@@ -599,7 +629,7 @@ class IMAUploader:
                     raise IMAError(e2.code, f"inline 与 batched 均失败: inline（{e.msg}） batched（{e2.msg}）")
             raise
         note_id = result.get("data", {}).get("note_id", "")
-        return {"note_id": note_id, "title": title}
+        return {"note_id": note_id, "title": effective}
 
     def append_note(self, note_id, content, transform_images=False):
         """追加内容到已有笔记。transform_images=True 时先内嵌图片；超限或写入报错自动降级分批"""
@@ -662,7 +692,8 @@ class IMAUploader:
         note_id = result.get("data", {}).get("note_id", "")
         if rest:
             self._write_note_batches(note_id, rest)
-        return {"note_id": note_id, "title": title, "batches": len(batches)}
+        return {"note_id": note_id, "title": _effective_title(title, first["content"]),
+                "batches": len(batches)}
 
     def upload_note_image(self, image_source, timeout=30):
         """
@@ -729,13 +760,16 @@ class IMAUploader:
 
     def upsert_note(self, title, content, folder_id=None, transform_images=False):
         """智能创建/追加：搜索同名笔记，存在则追加，不存在则新建"""
-        existing = self.find_exact_title(title)
+        # 必须按「服务端最终会用的标题」查重：content 自带 `# 别的标题` 时，
+        # 真实标题是那个而不是传入的 title，否则永远查不到、每次都新建。
+        lookup_title = _effective_title(title, content)
+        existing = self.find_exact_title(lookup_title)
         if existing:
             target = existing[0]
             self.append_note(target["note_id"], content, transform_images=transform_images)
             return {
                 "note_id": target["note_id"],
-                "title": title,
+                "title": lookup_title,
                 "action": "appended",
                 "existing_count": len(existing)
             }
@@ -977,7 +1011,7 @@ class IMAUploader:
             while cand.exists():
                 seq += 1
                 if seq > 99:
-                    raise IMAError(-1, f"同名文件过多（已尝试 99 个序号），已拒绝: {file_name}")
+                    raise IMAError(-1, f"同名文件过多（已尝试 100 个候选名），已拒绝: {file_name}")
                 cand = out_dir / f"{base}_{seq}{orig_suffix}"
             dest = cand
 
@@ -1285,7 +1319,7 @@ class IMAError(Exception):
 
 def _build_parser():
     parser = argparse.ArgumentParser(
-        description="IMA笔记上传工具 v3.4.6（笔记+知识库）",
+        description="IMA笔记上传工具 v3.4.7（笔记+知识库）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 笔记操作：
@@ -1505,7 +1539,9 @@ def _cmd_create(uploader, args):
     if dry_run:
         if not transform:
             raise ValueError("--dry-run 需配合 --transform-images 使用")
-        _, _, report = _apply_transform(content, True)
+        # 必须与真实写入同源：create_note 会先前置 `# 标题`，干跑若对原始 content 计算，
+        # 字节数少一个标题行，临界体积时会谎报 inline / batched。
+        _, _, report = _apply_transform(_with_note_heading(args.title, content), True)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return
     if getattr(args, 'dedup', False):
@@ -1540,7 +1576,10 @@ def _cmd_upsert(uploader, args):
     if dry_run:
         if not transform:
             raise ValueError("--dry-run 需配合 --transform-images 使用")
-        _, _, report = _apply_transform(content, True)
+        # upsert 可能走 create（前置标题）也可能走 append（不前置）。
+        # 干跑无法离线判断，统一按 create 路径估算，并在报告里标注，避免被读成 append 的批次。
+        _, _, report = _apply_transform(_with_note_heading(args.title, content), True)
+        report["note"] = "按 create 路径估算（正文含标题行）；若实际命中已有笔记走 append，字节数会少一个标题行"
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return
     result = uploader.upsert_note(args.title, content, transform_images=transform)

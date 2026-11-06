@@ -1,6 +1,6 @@
 {
-  "version": "3.4.6",
+  "version": "3.4.7",
   "publishedAt": 1792982218000,
   "readmeNoteId": null,
-  "changelog": "v3.4.6: 补全 v3.4.5 漏掉的 ps1 通道。ps1 create 同样在传 title、content 不带标题行，已改为 content 无 Markdown 标题时前置 # 标题、请求体移除 title，与 Python 侧 _with_note_heading 同口径。实跑 ps1 create 建笔记，find_exact_title 命中、title 正确。这类「两条通道改一条」的遗漏只有实跑另一条通道才会暴露"
+  "changelog": "v3.4.7: 第二轮审查修复。P0① upsert 在 content 自带不同标题时堆重复笔记——新增 _effective_title 统一裁决（content 一级标题优先，否则用入参），upsert 按它查重、create 按它返回 title；P0② --dry-run 与真实写入脱节（v3.4.5 引入，干跑少算标题行，临界体积会谎报 inline/batched）——干跑先前置标题再算批次。ps1 对齐 4 处：-Type content 仍搜标题、标题正则 (?m) 与 Python 不一致、未禁重定向且无 ctx 头、catch 丢业务 code/msg。修 1 条恒通过空断言。文档：README 74→81、api.md 补 ctx、SKILL.md 补标题语义。契约测试 79→81，两条新用例用 git stash 验过红态"
 }
