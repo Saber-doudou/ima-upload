@@ -1,6 +1,6 @@
 {
-  "version": "3.4.1",
+  "version": "3.4.2",
   "publishedAt": 1792982218000,
   "readmeNoteId": null,
-  "changelog": "v3.4.1: 外部审查修复，3 个静默数据缺陷 + 6 项一致性 + ps1 降级通道 4 处。P0① urllib 通道不校验 code，业务错误被当成功（抽出 _parse_payload 两通道共用）；P0② 降级分类把「响应解析失败」判成可重写，重复建笔记（黑名单改白名单，只在内容长度超限时降级）；P0③ download_media 同秒重名覆盖（改序号棘轮）。P1：add-url 兼容 list 响应、CONTENT_TYPE_MAP 补 xmind 两别名、图片签名补扩展名一致性、session.post 禁跟随重定向、inline 模式不再谎报 degrade。ps1：补 -Type 参数、输出改 ConvertTo-Json（原手拼 JSON 含未转义换行为非法 JSON）、UTF8Encoding 严格模式使 GBK 兜底生效。文档：api.md find_folder 参数顺序更正、补 get_addable_knowledge_base_list 端点、cli.md 删连排 ---。契约测试 64→72，新增 8 条先跑红后跑绿"
+  "changelog": "v3.4.2: 与官方对齐 + 两处修正。补 ima-openapi-ctx: skill_version=<ver> 请求头（官方每个请求都带，版本从 _meta.json 读、不新增同步点；实测带该头调用正常返回 17 个知识库）；修 file:///C:/x 被多切一个斜杠导致 Windows 必然找不到文件（官方 localPath 同缺陷，未跟随）；踩坑记录补两条现行文档缺失的已知限制：插图不支持相对路径、小内容报错不自动降级。契约测试 72→74"
 }

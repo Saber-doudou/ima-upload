@@ -1427,6 +1427,41 @@ def _():
         Path(path).unlink()
 
 
+@case("file:///C:/ 形式路径不被多切一个斜杠")
+def _():
+    got = m._local_image_path("file:///C:/a/b.png")
+    expect(got == "C:/a/b.png", f"Windows file:/// 路径解析错误: {got}")
+    unix = m._local_image_path("file:///tmp/a.png")
+    expect(unix == "/tmp/a.png", f"Unix 绝对路径被误改: {unix}")
+    rel = m._local_image_path("images/a.png")
+    expect(rel == "", f"相对路径应返回空串（与官方同规则）: {rel}")
+
+
+@case("请求头带 ima-openapi-ctx（与官方对齐）")
+def _():
+    orig_flag, orig_open = m.HAS_REQUESTS, m.urllib.request.urlopen
+    captured = {}
+
+    def fake_open(req, timeout=None):
+        captured.update(dict(req.headers))
+        raise RuntimeError("capture-only")
+
+    try:
+        m.HAS_REQUESTS = False
+        m.urllib.request.urlopen = fake_open
+        try:
+            _bare_uploader()._request("openapi/note/v1/list_notebook", {})
+        except RuntimeError:
+            pass
+    finally:
+        m.HAS_REQUESTS, m.urllib.request.urlopen = orig_flag, orig_open
+
+    headers = {k.lower(): v for k, v in captured.items()}
+    expect(m.SKILL_VERSION != "unknown", "未从 _meta.json 读到版本号")
+    expect(headers.get("ima-openapi-ctx") == f"skill_version={m.SKILL_VERSION}",
+           f"ctx 头缺失或格式不符: {headers.get('ima-openapi-ctx')}")
+
+
 def main():
     print("=" * 62)
     print("  ima_upload 请求契约测试（不发起真实请求）")

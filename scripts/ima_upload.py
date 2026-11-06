@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-IMA上传工具 - Python封装版本 v3.4.1
+IMA上传工具 - Python封装版本 v3.4.2
 
 功能概览：
   笔记模块：create / upsert / append / search / list / read / image-url
@@ -83,6 +83,21 @@ try:
     HAS_REQUESTS = True
 except ImportError:
     HAS_REQUESTS = False
+
+def _read_skill_version():
+    """
+    读取本技能版本号，用于 ima-openapi-ctx 头（与官方 ima_api.cjs 同做法）。
+    官方从自己的 meta.json 读 version、读不到降级 unknown；本地同理读 ../_meta.json，
+    避免在脚本里再写一个版本号常量造成第五个同步点。
+    """
+    meta = Path(__file__).resolve().parent.parent / "_meta.json"
+    try:
+        return json.loads(meta.read_text(encoding="utf-8")).get("version", "unknown")
+    except Exception:
+        return "unknown"
+
+
+SKILL_VERSION = _read_skill_version()
 
 # ========== 文件类型映射（与官方 preflight-check.cjs 对齐） ==========
 
@@ -253,7 +268,12 @@ _NOTE_IMAGE_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".we
 def _local_image_path(source):
     """识别本地路径来源（file:// 或绝对路径），否则返回空串"""
     if source.startswith("file://"):
-        return urllib.parse.unquote(source[7:])
+        p = urllib.parse.unquote(source[7:])
+        # 标准写法 file:///C:/x 切出的是 "/C:/x"，Windows 下多一个前导斜杠会找不到文件。
+        # 官方 localPath() 同样用 slice(7)，也有这个缺陷，此处不跟随。
+        if re.match(r"^/[A-Za-z]:[\\/]", p):
+            p = p[1:]
+        return p
     if source.startswith("/") or re.match(r"^[A-Za-z]:[\\/]", source):
         return source
     return ""
@@ -422,6 +442,7 @@ class IMAUploader:
             self.session.headers.update({
                 "ima-openapi-clientid": self.client_id,
                 "ima-openapi-apikey": self.api_key,
+                "ima-openapi-ctx": f"skill_version={SKILL_VERSION}",
                 "Content-Type": "application/json; charset=utf-8"
             })
 
@@ -467,6 +488,7 @@ class IMAUploader:
             headers={
                 "ima-openapi-clientid": self.client_id,
                 "ima-openapi-apikey": self.api_key,
+                "ima-openapi-ctx": f"skill_version={SKILL_VERSION}",
                 "Content-Type": "application/json; charset=utf-8"
             },
             method="POST"
@@ -1224,7 +1246,7 @@ class IMAError(Exception):
 
 def _build_parser():
     parser = argparse.ArgumentParser(
-        description="IMA笔记上传工具 v3.4.1（笔记+知识库）",
+        description="IMA笔记上传工具 v3.4.2（笔记+知识库）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 笔记操作：
