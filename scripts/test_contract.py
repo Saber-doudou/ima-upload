@@ -89,8 +89,10 @@ def _():
     r = u.create_note("标题", "正文")
     c = last_call(u)
     expect(c["path"] == "openapi/note/v1/import_doc", "端点错误")
-    expect(c["body"]["title"] == "标题", "title 错误")
-    expect(c["body"]["content"] == "正文", "content 错误")
+    # 官方 ImportNoteReq 只有 content_format / content / folder_id / folder_name，无 title；
+    # 标题必须体现在 content 首个 Markdown 标题上（见 _with_note_heading）
+    expect("title" not in c["body"], f"import_doc 无 title 字段: {sorted(c['body'].keys())}")
+    expect(c["body"]["content"] == "# 标题\n\n正文", f"标题未写进正文首行: {c['body']['content']!r}")
     expect(c["body"]["content_format"] == 1, "content_format 应为 1(markdown)")
     expect(r["note_id"] == "n1", "note_id 解析错误")
 
@@ -1490,6 +1492,40 @@ def _():
         return
     finally:
         Path(path).unlink()
+
+
+@case("create_note 把标题写进 content 首行（官方 import_doc 无 title 字段）")
+def _():
+    u = FakeUploader()
+    u.create_note("标题A", "正文内容")
+    body = last_call(u)["body"]
+    expect("title" not in body,
+           f"import_doc 无 title 字段，不应再传: {sorted(body.keys())}")
+    expect(body["content"].startswith("# 标题A\n\n"),
+           f"content 未以标题行开头，服务端会把正文首句当标题: {body['content']!r}")
+    expect("正文内容" in body["content"], "正文丢失")
+
+
+@case("content 已带 Markdown 标题时不重复前置")
+def _():
+    u = FakeUploader()
+    u.create_note("标题B", "# 已有标题\n\n正文")
+    body = last_call(u)["body"]
+    expect(body["content"].startswith("# 已有标题"),
+           f"未保留原标题: {body['content']!r}")
+    expect("# 标题B" not in body["content"], "不该重复加标题")
+    expect(body["content"].count("# 已有标题") == 1, "标题被重复插入")
+
+
+@case("create_note_batched 首批也带标题行")
+def _():
+    u = FakeUploader()
+    u.responses["openapi/note/v1/import_doc"] = {"code": 0, "data": {"note_id": "n9"}}
+    u.create_note_batched("标题C", [{"type": "text", "content": "第一批"}])
+    body = u.calls[0]["body"]
+    expect("title" not in body, "import_doc 不应再传 title 字段")
+    expect(body["content"].startswith("# 标题C\n\n"),
+           f"首批未带标题行: {body['content']!r}")
 
 
 def main():

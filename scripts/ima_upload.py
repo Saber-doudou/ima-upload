@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-IMA上传工具 - Python封装版本 v3.4.4
+IMA上传工具 - Python封装版本 v3.4.5
 
 功能概览：
   笔记模块：create / upsert / append / search / list / read / image-url
@@ -43,6 +43,7 @@ IMA上传工具 - Python封装版本 v3.4.4
 """
 
 import os
+import re
 import sys
 import json
 import time
@@ -254,7 +255,6 @@ def _is_content_related_error(err):
 # 官方行为：图片校验后转 base64 data URL 内嵌，按 text/image 分批写入；
 # 换链仅限 --url 单图模式（mcp_cloud_agent 双端点，实测需云端会话）。
 
-import re
 import base64
 import shutil
 
@@ -263,6 +263,28 @@ DATA_URL_RE = re.compile(r"^data:(image/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]
 MAX_NOTE_IMAGE_SIZE = 3 * 1024 * 1024  # 官方严格小于 3MiB
 BATCH_INLINE_LIMIT = 2 * 1024 * 1024   # 超过则降级官方分批 append_doc 模式
 _NOTE_IMAGE_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
+
+
+_MD_HEADING_RE = re.compile(r"^\s*#\s+\S")
+
+
+def _with_note_heading(title, content):
+    """
+    把标题写进 content 的首行 Markdown 标题。
+
+    为什么：官方 `ImportNoteReq` 只有 content_format / content / folder_id / folder_name
+    四个字段，**没有 title**。服务端从 content 的首个 `# 标题` 推导笔记标题。
+    此前实现传了 `title` 字段（服务端忽略）而 content 不带标题行，结果：
+      - 笔记标题变成正文首句；
+      - `find_exact_title` 永远匹配不到，`upsert` 因此每次都新建，堆出重复笔记。
+    v2 曾因「内容里标题重复」把自动前置标题删掉，那次是误判——那个标题行是必须的。
+
+    已带 Markdown 标题时原样返回，不插入第二个标题。
+    """
+    body = content or ""
+    if _MD_HEADING_RE.match(body):
+        return body
+    return f"# {title}\n\n{body}"
 
 
 def _normalize_content_type(raw):
@@ -546,8 +568,11 @@ class IMAUploader:
         """创建新笔记。transform_images=True 时先内嵌图片；超限或写入报错自动降级分批"""
         self._validate_utf8(title, "title")
         self._validate_utf8(content, "content")
+        # 标题写进正文首行：官方 import_doc 没有 title 字段，标题由首个 Markdown 标题推导。
+        # 放在入口处前置，后续分批/插图处理都自然带上，不用每处再补。
+        content = _with_note_heading(title, content)
         if not transform_images:
-            body = {"title": title, "content": content, "content_format": 1}
+            body = {"content": content, "content_format": 1}
             if folder_id:
                 body["folder_id"] = folder_id
             result = self._request("openapi/note/v1/import_doc", body)
@@ -557,7 +582,7 @@ class IMAUploader:
         transformed, batches, _ = _apply_transform(content, True)
         if batches:
             return self.create_note_batched(title, batches, folder_id=folder_id)
-        body = {"title": title, "content": transformed, "content_format": 1}
+        body = {"content": transformed, "content_format": 1}
         if folder_id:
             body["folder_id"] = folder_id
         try:
@@ -629,7 +654,8 @@ class IMAUploader:
         if not batches:
             raise IMAError(-1, "batches 不能为空（无可写入内容）")
         first, rest = batches[0], batches[1:]
-        body = {"title": title, "content": first["content"], "content_format": 1}
+        # 把标题放进首批首行；若首批已带标题（create_note 入口已前置），guard 会原样返回
+        body = {"content": _with_note_heading(title, first["content"]), "content_format": 1}
         if folder_id:
             body["folder_id"] = folder_id
         result = self._request("openapi/note/v1/import_doc", body)
@@ -1259,7 +1285,7 @@ class IMAError(Exception):
 
 def _build_parser():
     parser = argparse.ArgumentParser(
-        description="IMA笔记上传工具 v3.4.4（笔记+知识库）",
+        description="IMA笔记上传工具 v3.4.5（笔记+知识库）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 笔记操作：

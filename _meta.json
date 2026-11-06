@@ -1,6 +1,6 @@
 {
-  "version": "3.4.4",
+  "version": "3.4.5",
   "publishedAt": 1792982218000,
   "readmeNoteId": null,
-  "changelog": "v3.4.4: ps1 降级通道实跑修复。①响应中文 mojibake：Invoke-RestMethod 在 PS5.1 对无 charset 的 JSON 按 ISO-8859-1 解码，中文在解析阶段即损坏（实测输出 è®°å½æ¶é´），此前只修了请求侧；改用 Invoke-WebRequest 取 RawContentStream 按 UTF-8 解码。②Invoke-WebRequest 进度条污染 -Json 输出，设 ProgressPreference=SilentlyContinue。实跑 ps1 search 只读调用：输出纯 JSON、解析 20 条、中文正常。写路径未验证"
+  "changelog": "v3.4.5: 修笔记标题丢失（v2 误判修复遗留的设计缺陷）。官方 ImportNoteReq 只有 content_format/content/folder_id/folder_name，没有 title——标题由 content 首个 Markdown 标题推导。此前传 title 而 content 不带标题行，导致标题变正文首句，且 find_exact_title 永远匹配不到、upsert 每次新建堆重复笔记。新增 _with_note_heading 在 content 前置 # 标题，移除 title 字段，批量首批同样处理。契约测试 76→79，先对 v3.4.4 跑红（77/79）再跑绿（79/79）。历史笔记不追改"
 }

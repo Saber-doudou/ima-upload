@@ -12,7 +12,7 @@
 | PowerShell 中文乱码 | ①PS5.1 默认 GBK；②`Invoke-RestMethod` 对响应头无 charset 的 JSON 按 ISO-8859-1 解析 | 请求侧：脚本带 UTF-8 BOM、Body 转字节数组；响应侧：改 `Invoke-WebRequest` 取 `RawContentStream` 自行按 UTF-8 解码。**只在请求侧修不够**——响应在解析阶段已成 mojibake，外层再设编码救不回来（v3.4.4 实跑发现） |
 | `clientID or apiKey is empty` | header 名错误 | 用 `ima-openapi-clientid`（全小写）|
 | 凭证读不到 | BOM 或空格 | 自动 strip() + BOM 跳过；尝试多路径回退 |
-| 内容里标题重复 | `create_note` 自动加了 `# 标题` | v2 已移除自动前缀，content 直接写入 |
+| ~~内容里标题重复 → 移除自动前缀~~ | **该条结论是错的，v3.4.5 已推翻。** 当年看到「内容里标题重复」就认定 `# 标题` 是冗余删掉了，但那行是 API 唯一的标题载体：`ImportNoteReq` 没有 `title` 字段，服务端只从 content 首个 Markdown 标题推导标题 | 现在由 `_with_note_heading()` 在 content 前置 `# 标题`（已带则不重复加）。删掉它会导致标题变正文首句，且 `find_exact_title` 永远匹配不到、`upsert` 每次新建 |
 | Git Bash 找不到 Python | 环境限制 | 改用 PowerShell 封装脚本 |
 | 文件内容乱码 | 文件是 GBK 编码 | 自动尝试 UTF-8 → GBK → Latin-1 |
 | COS 上传超时 | 大文件超 120s | 默认 timeout 300s，大文件可自行调整 |
