@@ -31,11 +31,25 @@ param(
     [string]$Arg2,
 
     [string]$File,
+    [ValidateSet("title", "content")]
+    [string]$Type = "title",
     [switch]$Json,
     [string]$Log
 )
 
 $ErrorActionPreference = "Stop"
+
+# 统一控制台输出编码。PS5.1 默认按 GBK 编码输出，中文 JSON 会乱码；
+# 设成 UTF-8 后可直接 Write-Output 字符串，不必再手工转字节数组。
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+
+function Write-JsonError {
+    # 用 ConvertTo-Json 生成，避免把含引号/换行的文本直接插进 JSON 字面量（会产出非法 JSON）
+    param([string]$Msg, $Code = $null)
+    $obj = @{ error = $true; msg = $Msg }
+    if ($null -ne $Code) { $obj["code"] = $Code }
+    Write-Output ($obj | ConvertTo-Json -Compress)
+}
 
 # ===== 凭证加载 =====
 $ConfigBase = "$env:USERPROFILE\.config\ima"
@@ -58,7 +72,7 @@ $ApiKey   = Get-FileContent $ApiKeyPath
 if (-not $ClientId -or -not $ApiKey) {
     $msg = "未找到IMA凭证。请确保以下文件存在：`n  $ClientIdPath`n  $ApiKeyPath"
     if ($Json) {
-        Write-Output ([System.Text.Encoding]::UTF8.GetBytes("{`"error`":true,`"msg`":`"$msg`"}"))
+        Write-JsonError -Msg $msg
     } else {
         Write-Error $msg
     }
@@ -92,15 +106,17 @@ function Read-FileContent {
     param([string]$Path)
     if (-not (Test-Path $Path)) {
         if ($Json) {
-            Write-Output ([System.Text.Encoding]::UTF8.GetBytes("{`"error`":true,`"msg`":`"文件不存在: $Path`"}"))
+            Write-JsonError -Msg "文件不存在: $Path"
         } else {
             Write-Error "文件不存在: $Path"
         }
         exit 1
     }
-    # 尝试 UTF-8，失败则 GBK
+    # UTF8Encoding(throwOnInvalidBytes=$true)：非法字节必须抛异常才能落到 GBK 兜底。
+    # 原写法用 [Encoding]::UTF8，它把非法序列替换成 U+FFFD 而不抛异常，兜底分支永远不生效。
+    $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
     try {
-        return [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+        return [System.IO.File]::ReadAllText($Path, $strictUtf8)
     } catch {
         return [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::Default)
     }
@@ -141,7 +157,7 @@ switch ($Command) {
         if ($resp.code -ne 0) {
             $msg = "[IMA Error $($resp.code)] $($resp.msg)"
             if ($Json) {
-                Write-Output ([System.Text.Encoding]::UTF8.GetBytes("{`"error`":true,`"code`":$($resp.code),`"msg`":`"$($resp.msg)`"}"))
+                Write-JsonError -Msg $resp.msg -Code $resp.code
             } else {
                 Write-Error $msg
             }
@@ -156,7 +172,7 @@ switch ($Command) {
         }
 
         if ($Json) {
-            Write-Output ([System.Text.Encoding]::UTF8.GetBytes(($result | ConvertTo-Json -Compress)))
+            Write-Output ($result | ConvertTo-Json -Compress)
         } else {
             Write-Host "笔记创建成功" -ForegroundColor Green
             Write-Host "   note_id: $noteId"
@@ -189,7 +205,7 @@ switch ($Command) {
 
         if ($resp.code -ne 0) {
             if ($Json) {
-                Write-Output ([System.Text.Encoding]::UTF8.GetBytes("{`"error`":true,`"code`":$($resp.code),`"msg`":`"$($resp.msg)`"}"))
+                Write-JsonError -Msg $resp.msg -Code $resp.code
             } else {
                 Write-Error "[IMA Error $($resp.code)] $($resp.msg)"
             }
@@ -197,7 +213,7 @@ switch ($Command) {
         }
 
         if ($Json) {
-            Write-Output ([System.Text.Encoding]::UTF8.GetBytes("{`"note_id`":`"$noteId`",`"ok`":true}"))
+            Write-Output (@{ note_id = $noteId; ok = $true } | ConvertTo-Json -Compress)
         } else {
             Write-Host "内容已追加到笔记 $noteId" -ForegroundColor Green
         }
@@ -210,7 +226,7 @@ switch ($Command) {
         }
         $keyword  = $Arg1
         $searchType = 0
-        if ($File -eq "content") { $searchType = 1 }
+        if ($Type -eq "content") { $searchType = 1 }
 
         $body = @{
             search_type = $searchType
@@ -222,7 +238,7 @@ switch ($Command) {
 
         if ($resp.code -ne 0) {
             if ($Json) {
-                Write-Output ([System.Text.Encoding]::UTF8.GetBytes("{`"error`":true,`"code`":$($resp.code),`"msg`":`"$($resp.msg)`"}"))
+                Write-JsonError -Msg $resp.msg -Code $resp.code
             } else {
                 Write-Error "[IMA Error $($resp.code)] $($resp.msg)"
             }
@@ -238,7 +254,7 @@ switch ($Command) {
                     summary = $_.note_book_info.summary
                 }
             }
-            Write-Output ([System.Text.Encoding]::UTF8.GetBytes(($output | ConvertTo-Json -Depth 5)))
+            Write-Output ($output | ConvertTo-Json -Depth 5)
         } else {
             if ($notes.Count -eq 0) {
                 Write-Host "未找到匹配「$keyword」的笔记"

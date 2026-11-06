@@ -1,0 +1,59 @@
+{
+  "schema_version": 2,
+  "_comment": "check_official_skill.py 的唯一配置源。端点覆盖情况由脚本自动比对，此处只维护本地独有能力与待整合能力。",
+
+  "local_exclusive": [
+    "note/upsert（同名笔记自动追加，官方无此命令）",
+    "note/dedup（--dedup 创建前查重跳过）",
+    "--json 纯 JSON 输出（便于自动化）",
+    "--log 将 note_id 追加写入映射文件",
+    "Python API（IMAUploader 可直接 import 调用）"
+  ],
+
+  "pending_capabilities": [
+    {
+      "key": "note/image-link-rewrite",
+      "name": "笔记插图转存换链",
+      "official_since": "1.1.10",
+      "status": "integrated",
+      "note": "v3.3.0 已整合。纠偏：官方无 import_image 端点，实际是 data URL 内嵌 + append_doc 分批（--transform-images + --dry-run）；换链仅 --url 单图模式（image-url 子命令，走 mcp_cloud_agent 双端点，实测需云端会话，失败给降级指引）"
+    },
+    {
+      "key": "kb/download-original",
+      "name": "获取原文并落盘",
+      "official_since": "1.1.9",
+      "status": "integrated",
+      "note": "v3.3.0 已整合（kb media --download / download_media）。纠偏：官方无 cos-download.cjs；实测 url_info.url 为带 sign 预签名链接，查询串含 media_title/response-content-type，追加参数会 403，故签名 URL 原样用、文件名取 media_title，仅未签名 URL 追加官方 disposition 约定"
+    },
+    {
+      "key": "kb/image-signature-check",
+      "name": "图片签名一致性校验",
+      "official_since": "1.1.10",
+      "status": "integrated",
+      "note": "v3.3.0 已整合：只读文件头 12 字节比对 PNG/JPEG/WebP 魔数，签名与扩展名/声明类型不符即拦截；另补 content-type 优先解析"
+    },
+    {
+      "key": "upload/html",
+      "name": "HTML 文件上传（media_type=20）",
+      "official_since": "1.1.9",
+      "status": "integrated",
+      "note": "v3.3.0 已整合：EXT_MAP html→20 / text/html，SIZE_LIMITS 20:10MB"
+    },
+    {
+      "key": "upload/epub",
+      "name": "EPUB 文件上传（media_type=21）",
+      "official_since": "1.1.9",
+      "status": "integrated",
+      "note": "v3.3.0 已整合：EXT_MAP epub→21 / application/epub+zip，SIZE_LIMITS 21:50MB"
+    }
+  ],
+
+  "api_field_quirks": {
+    "search_knowledge_base": "实测返回 kb_id / kb_name；官方 api.md 写的是 id / name，文档与接口不符",
+    "get_addable_knowledge_base_list": "返回 id / name",
+    "get_knowledge_base": "返回 infos（map），值内为 id / name",
+    "get_knowledge_list": "文件夹靠 media_type=99 且 media_id 以 folder_ 开头识别；无 folder_id / file_number / folder_number 字段",
+    "search_knowledge": "返回条目自身 media_id 与 parent_folder_id；文件夹同样是 media_type=99",
+    "get_media_info": "非笔记类型返回 url_info{url,headers}；笔记类型(11) 返回 notebook_ext_info.notebook_id"
+  }
+}
