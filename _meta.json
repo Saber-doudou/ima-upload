@@ -1,6 +1,6 @@
 {
-  "version": "3.4.5",
+  "version": "3.4.6",
   "publishedAt": 1792982218000,
   "readmeNoteId": null,
-  "changelog": "v3.4.5: 修笔记标题丢失（v2 误判修复遗留的设计缺陷）。官方 ImportNoteReq 只有 content_format/content/folder_id/folder_name，没有 title——标题由 content 首个 Markdown 标题推导。此前传 title 而 content 不带标题行，导致标题变正文首句，且 find_exact_title 永远匹配不到、upsert 每次新建堆重复笔记。新增 _with_note_heading 在 content 前置 # 标题，移除 title 字段，批量首批同样处理。契约测试 76→79，先对 v3.4.4 跑红（77/79）再跑绿（79/79）。历史笔记不追改"
+  "changelog": "v3.4.6: 补全 v3.4.5 漏掉的 ps1 通道。ps1 create 同样在传 title、content 不带标题行，已改为 content 无 Markdown 标题时前置 # 标题、请求体移除 title，与 Python 侧 _with_note_heading 同口径。实跑 ps1 create 建笔记，find_exact_title 命中、title 正确。这类「两条通道改一条」的遗漏只有实跑另一条通道才会暴露"
 }

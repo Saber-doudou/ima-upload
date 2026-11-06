@@ -156,8 +156,13 @@ switch ($Command) {
             exit 1
         }
 
+        # 与 Python 侧 _with_note_heading 同口径：import_doc 没有 title 字段，
+        # 标题由 content 首个 Markdown 标题推导。content 已带标题时不重复加。
+        if ($content -notmatch '(?m)^\s*#\s+\S') {
+            $content = "# $title`r`n`r`n$content"
+        }
+
         $body = @{
-            title          = $title
             content        = $content
             content_format = 1
         }

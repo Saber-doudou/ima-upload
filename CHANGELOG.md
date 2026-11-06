@@ -2,6 +2,24 @@
 
 本文件记录 ima-upload 技能的版本变更。版本号遵循三段式（MAJOR.MINOR.PATCH），每段不超过一位数。
 
+## v3.4.6 — 2026-11-07
+
+补全 v3.4.5 漏掉的一条通道：`ps1` 的 `create` 同样在传 `title`、content 不带标题行。
+
+### 修复
+
+- `scripts/ima_upload.ps1` 的 `create` 分支：content 不含 Markdown 标题（`(?m)^\s*#\s+\S` 不匹配）时前置 `# {title}\r\n\r\n`，请求体移除 `title` 字段，与 Python 侧 `_with_note_heading()` 同口径。
+
+v3.4.5 只改了 `ima_upload.py`，`ps1` 降级通道仍是旧行为——这类「两条通道改一条」的遗漏，只有在实跑另一条通道时才会暴露。
+
+### 实跑验证
+
+```
+ps1 create "【测试·请删除】ps1标题修复-20261107-0046" "..."
+→ note_id 7524512161619454
+→ find_exact_title 命中，title 正确
+```
+
 ## v3.4.5 — 2026-11-07
 
 **笔记标题丢失修复。这是 v2 一次误判修复留下的设计缺陷，影响所有 API 创建的笔记。** 契约测试 76 → 79 项。
