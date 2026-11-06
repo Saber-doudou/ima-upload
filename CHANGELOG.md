@@ -2,6 +2,30 @@
 
 本文件记录 ima-upload 技能的版本变更。版本号遵循三段式（MAJOR.MINOR.PATCH），每段不超过一位数。
 
+## v3.4.4 — 2026-11-07
+
+`ps1` 降级通道实跑修复。**这两条只有真跑才暴露，静态审查看不出来。**
+
+### 修复
+
+- **响应中文 mojibake（实跑发现）**：`Invoke-RestMethod` 在 PS5.1 上对「响应头没写 charset」的 JSON 默认按 ISO-8859-1 解码，中文在**解析阶段**就变成拉丁乱码（实测输出 `è®°å½æ¶é´` 即「记录时间」）。此前只修过请求侧（Body 转字节数组），响应侧一直是坏的，且外层再设 `Console.OutputEncoding` 也救不回来。修复：改用 `Invoke-WebRequest` 取 `RawContentStream`，自己按 UTF-8 解码再 `ConvertFrom-Json`。
+- **进度条污染 `-Json` 输出**：PS5.1 的 `Invoke-WebRequest` 会往输出流打「正在读取 Web 响应…」，把机器可读 JSON 弄成非 JSON。修复：启动时 `$ProgressPreference = "SilentlyContinue"`（顺带显著加快大响应）。
+
+### 实跑验证
+
+```
+ps1 search "备份" -Type content -Json
+→ 输出类型 String（非字节数组）
+→ 纯 JSON，ConvertFrom-Json 解析成功，20 条结果
+→ 中文正常：「记录时间：2026-05-15 脚本版本：sync_to_cloud.py v6.0」
+```
+
+只读接口，未产生任何写入。
+
+### 仍未验证
+
+`ps1` 的**写路径**（`create` / `append`）没有实跑——验证需要往 IMA 真实写入测试数据，留待 Master 指定测试笔记本后再做。
+
 ## v3.4.3 — 2026-11-07
 
 content-type 口径统一。契约测试 74 → 76 项。

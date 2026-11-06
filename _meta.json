@@ -1,6 +1,6 @@
 {
-  "version": "3.4.3",
+  "version": "3.4.4",
   "publishedAt": 1792982218000,
   "readmeNoteId": null,
-  "changelog": "v3.4.3: content-type 口径统一。原实现只在视频黑名单处做 split(;)/strip/lower 归一化，映射表却拿原始串查表，导致 --content-type \"Image/PNG\" 或 \"image/png; charset=utf-8\" 静默退回扩展名，扩展名不认识时误报「不支持的文件类型」。抽出 _normalize_content_type() 两处共用。契约测试 74→76，新增用例先对 v3.4.2 跑红（74/76）再跑绿（76/76）"
+  "changelog": "v3.4.4: ps1 降级通道实跑修复。①响应中文 mojibake：Invoke-RestMethod 在 PS5.1 对无 charset 的 JSON 按 ISO-8859-1 解码，中文在解析阶段即损坏（实测输出 è®°å½æ¶é´），此前只修了请求侧；改用 Invoke-WebRequest 取 RawContentStream 按 UTF-8 解码。②Invoke-WebRequest 进度条污染 -Json 输出，设 ProgressPreference=SilentlyContinue。实跑 ps1 search 只读调用：输出纯 JSON、解析 20 条、中文正常。写路径未验证"
 }

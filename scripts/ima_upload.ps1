@@ -39,6 +39,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# PS5.1 的 Invoke-WebRequest 会往输出流打「正在读取 Web 响应…」进度条，
+# 会把 -Json 的机器可读输出污染成非 JSON。关掉，顺带显著加快大响应。
+$ProgressPreference = "SilentlyContinue"
+
 # 统一控制台输出编码。PS5.1 默认按 GBK 编码输出，中文 JSON 会乱码；
 # 设成 UTF-8 后可直接 Write-Output 字符串，不必再手工转字节数组。
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
@@ -95,8 +99,13 @@ function Invoke-IMAApi {
     }
     $utf8Bytes = [System.Text.Encoding]::UTF8.GetBytes(($Body | ConvertTo-Json -Depth 10))
     try {
-        $resp = Invoke-RestMethod -Uri $url -Method Post -Body $utf8Bytes -Headers $headers -TimeoutSec 30
-        return $resp
+        # 用 Invoke-WebRequest 取原始字节后自己按 UTF-8 解码。
+        # Invoke-RestMethod 在 PS5.1 上对「响应头没写 charset」的 JSON 默认按 ISO-8859-1 解析，
+        # 中文会在解析阶段就变成 mojibake（实跑症状：输出里出现 "è®°å½æ¶é´" 这类拉丁乱码），
+        # 且转换发生在返回对象之后，外层再怎么设编码都救不回来。
+        $resp = Invoke-WebRequest -Uri $url -Method Post -Body $utf8Bytes -Headers $headers -TimeoutSec 30 -UseBasicParsing
+        $json = [System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray())
+        return ($json | ConvertFrom-Json)
     } catch {
         throw "API请求失败: $_"
     }
