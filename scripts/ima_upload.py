@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-IMA上传工具 - Python封装版本 v3.4.7
+IMA上传工具 - Python封装版本 v3.4.8
 
 功能概览：
   笔记模块：create / upsert / append / search / list / read / image-url
@@ -267,6 +267,45 @@ _NOTE_IMAGE_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".we
 
 _MD_HEADING_RE = re.compile(r"^\s*#\s+\S")
 _TITLE_LINE_RE = re.compile(r"^\s*#\s+(.+?)\s*$")
+
+
+_NOTE_INDEX_ENV = "IMA_NOTE_INDEX"
+
+
+def _note_index_path():
+    """本地标题→note_id 账本路径。可用 IMA_NOTE_INDEX 环境变量指向别处（测试用）。"""
+    override = os.environ.get(_NOTE_INDEX_ENV)
+    if override:
+        return Path(override)
+    return Path.home() / ".config" / "ima" / "note_index.json"
+
+
+def _load_note_index():
+    try:
+        data = json.loads(_note_index_path().read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_note_index(index):
+    """原子写回。账本只是去重优化，写失败不应影响主流程。"""
+    p = _note_index_path()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, p)
+    except Exception:
+        pass
+
+
+def _remember_note(title, note_id):
+    if not title or not note_id:
+        return
+    index = _load_note_index()
+    index[title] = note_id
+    _save_note_index(index)
 
 
 def _clean_title(title):
@@ -607,6 +646,7 @@ class IMAUploader:
                 body["folder_id"] = folder_id
             result = self._request("openapi/note/v1/import_doc", body)
             note_id = result.get("data", {}).get("note_id", "")
+            _remember_note(effective, note_id)
             return {"note_id": note_id, "title": effective}
 
         transformed, batches, _ = _apply_transform(content, True)
@@ -629,6 +669,7 @@ class IMAUploader:
                     raise IMAError(e2.code, f"inline 与 batched 均失败: inline（{e.msg}） batched（{e2.msg}）")
             raise
         note_id = result.get("data", {}).get("note_id", "")
+        _remember_note(effective, note_id)
         return {"note_id": note_id, "title": effective}
 
     def append_note(self, note_id, content, transform_images=False):
@@ -690,9 +731,11 @@ class IMAUploader:
             body["folder_id"] = folder_id
         result = self._request("openapi/note/v1/import_doc", body)
         note_id = result.get("data", {}).get("note_id", "")
+        batch_title = _effective_title(title, first["content"])
+        _remember_note(batch_title, note_id)
         if rest:
             self._write_note_batches(note_id, rest)
-        return {"note_id": note_id, "title": _effective_title(title, first["content"]),
+        return {"note_id": note_id, "title": batch_title,
                 "batches": len(batches)}
 
     def upload_note_image(self, image_source, timeout=30):
@@ -763,9 +806,30 @@ class IMAUploader:
         # 必须按「服务端最终会用的标题」查重：content 自带 `# 别的标题` 时，
         # 真实标题是那个而不是传入的 title，否则永远查不到、每次都新建。
         lookup_title = _effective_title(title, content)
+
+        # 先查本地账本：search_note 是最终一致的（新建后要过几秒到十几秒才可搜到），
+        # 单靠搜索做「先查后建」在连发时会重复建笔记——这是 search-then-create 的经典竞态。
+        # 服务端没有条件创建 / 唯一键，只能在客户端做写屏障：自己记住建过的 note_id。
+        cached = _load_note_index().get(lookup_title)
+        if cached:
+            try:
+                self.get_note_content(cached)   # 校验条目仍有效（可能在客户端被删）
+            except Exception:
+                cached = None                    # 失效则丢弃，回落搜索
+        if cached:
+            self.append_note(cached, content, transform_images=transform_images)
+            return {
+                "note_id": cached,
+                "title": lookup_title,
+                "action": "appended",
+                "existing_count": 1,
+                "source": "ledger"
+            }
+
         existing = self.find_exact_title(lookup_title)
         if existing:
             target = existing[0]
+            _remember_note(lookup_title, target["note_id"])
             self.append_note(target["note_id"], content, transform_images=transform_images)
             return {
                 "note_id": target["note_id"],
@@ -1319,7 +1383,7 @@ class IMAError(Exception):
 
 def _build_parser():
     parser = argparse.ArgumentParser(
-        description="IMA笔记上传工具 v3.4.7（笔记+知识库）",
+        description="IMA笔记上传工具 v3.4.8（笔记+知识库）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 笔记操作：

@@ -11,7 +11,7 @@ description: "IMA（腾讯 ima）云端笔记与知识库的本地直连上传�
   不适用：只需要把本地图片转成外链再嵌入时用官方 ima-skills（需云代理会话）；普通对话记忆整理用 memory-consolidate。"
 ---
 
-# IMA 笔记上传 Skill v3.4.7
+# IMA 笔记上传 Skill v3.4.8
 
 腾讯 IMA 云端笔记 + 知识库管理工具。整合官方 ima-skill 知识库模块，保留本地独有优势。
 
@@ -188,7 +188,7 @@ python scripts/check_official_skill.py --official-dir PATH  # 指定官方包目
 写操作的正确性用 mock 验证，不产生真实数据：
 
 ```bash
-python scripts/test_contract.py        # 81 项契约检查
+python scripts/test_contract.py        # 83 项契约检查
 python scripts/test_contract.py -v     # 附失败明细
 ```
 
@@ -217,7 +217,7 @@ dry-run、换链请求体与 session 降级）、空批防御、`EXT_MAP`/`SIZE_
 | **给原文链接追加下载参数变 403** | `url_info.url` 是带 `sign` 的预签名链接，查询串含 `media_title`/`response-content-type`，追加任何参数都破坏签名 | 签名 URL 原样用；文件名从 `media_title` 取；仅未签名 URL 才追加官方 disposition 约定 |
 | **插图写相对路径被拒** | `![](images/a.png)` 报「不支持的图片来源」：只认 `file://`、`/` 开头、`盘符:\` 三种（官方 `localPath()` 同规则，非本地限制） | 改绝对路径 `![](C:/pics/a.png)` 或 `![](file:///C:/pics/a.png)`；Windows 下 `file:///C:/x` 的前导斜杠本地已修正，官方仍有该缺陷 |
 | **小内容报错不自动降级** | 降级条件是切分后 ≥2 批（`len(fallback) > 1`），单批内容遇到 content 类报错直接抛出 | 内容本身就小，拆无可拆；按报错文案调整后重试，或去掉 `--transform-images` 走普通 `create` |
-| **连续 upsert 同一标题会重复建笔记** | `upsert` 靠 `search_note` 查重，新建笔记进搜索索引有秒级到十几秒延迟（实测刚 create 完立刻查返回 0，隔一分钟能查到 2 条同名） | 服务端最终一致性，非本地逻辑错误。同一标题不要连发 `upsert`；批量前先 `search` 确认，或间隔数十秒。需要强一致时先 `create` 拿到 note_id 自行记录 |
+| **连续 upsert 同一标题曾重复建笔记** | `search_note` 索引有秒级到十几秒延迟，「先查后建」是经典竞态（v3.4.8 前必现） | 已由本地账本兜底：建过就在 `~/.config/ima/note_index.json` 记下 note_id，下次直接追加；条目失效（笔记被删）会校验失败并回落搜索。**账本不跨设备同步**，换机器首次仍可能受索引延迟影响 |
 
 ---
 
@@ -231,3 +231,4 @@ dry-run、换链请求体与 session 降级）、空批防御、`EXT_MAP`/`SIZE_
 | 契约测试 | `~/.workbuddy/skills/ima-upload/scripts/test_contract.py` |
 | 检测配置 | `~/.workbuddy/skills/ima-upload/scripts/check_config.json` |
 | 凭证配置 | `~/.config/ima/` |
+| upsert 幂等账本（标题→note_id） | `~/.config/ima/note_index.json`（可用 `IMA_NOTE_INDEX` 改路径；删掉不影响使用，只是回到靠搜索查重） |

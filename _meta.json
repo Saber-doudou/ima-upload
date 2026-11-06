@@ -1,6 +1,6 @@
 {
-  "version": "3.4.7",
+  "version": "3.4.8",
   "publishedAt": 1792982218000,
   "readmeNoteId": null,
-  "changelog": "v3.4.7: 第二轮审查修复。P0① upsert 在 content 自带不同标题时堆重复笔记——新增 _effective_title 统一裁决（content 一级标题优先，否则用入参），upsert 按它查重、create 按它返回 title；P0② --dry-run 与真实写入脱节（v3.4.5 引入，干跑少算标题行，临界体积会谎报 inline/batched）——干跑先前置标题再算批次。ps1 对齐 4 处：-Type content 仍搜标题、标题正则 (?m) 与 Python 不一致、未禁重定向且无 ctx 头、catch 丢业务 code/msg。修 1 条恒通过空断言。文档：README 74→81、api.md 补 ctx、SKILL.md 补标题语义。契约测试 79→81，两条新用例用 git stash 验过红态"
+  "changelog": "v3.4.8: 给 upsert 加本地幂等账本，解决连发同一标题重复建笔记。v3.4.7 已修标题源，但真机复测仍重复——根因是 search_note 索引延迟（秒级到十几秒），先搜后建在最终一致索引上必然竞态。IMA import_doc 无唯一键也无条件创建，服务端不给屏障，只能客户端自建：新增 ~/.config/ima/note_index.json 记账（标题→note_id），create 记账、upsert 先查账本，命中则直接追加并先 get_note_content 校验有效性（失效即回落搜索）；原子写、失败静默。实跑三次 upsert 同一标题只建一条（第2/3次 source=ledger）。账本不跨设备同步。契约测试 81→83，并修掉用例污染真实账本的问题（现每用例独立临时账本）"
 }

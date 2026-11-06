@@ -15,6 +15,7 @@ ima_upload 请求契约测试
 """
 
 import sys
+import os
 import tempfile
 import urllib.parse
 from pathlib import Path
@@ -26,6 +27,11 @@ if sys.platform == "win32":
         pass
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# 账本（upsert 的本地幂等缓存）必须隔离到临时目录：
+# 否则用例会往用户真实配置 ~/.config/ima/note_index.json 写测试数据，污染线上账本。
+os.environ["IMA_NOTE_INDEX"] = str(Path(tempfile.mkdtemp(prefix="ima-ut-ledger-")) / "note_index.json")
+
 import ima_upload as m  # noqa: E402
 
 VERBOSE = "-v" in sys.argv or "--verbose" in sys.argv
@@ -61,6 +67,9 @@ def expect(cond, msg):
 
 def case(name):
     def deco(fn):
+        # 每个用例独立账本：账本按标题做键，跨用例共用会让「标题」这类通用标题互相污染
+        os.environ["IMA_NOTE_INDEX"] = str(
+            Path(tempfile.mkdtemp(prefix="ima-ut-case-")) / "note_index.json")
         try:
             fn()
             PASSED.append(name)
@@ -1577,6 +1586,70 @@ def _():
     _, _, real = m._apply_transform(m._with_note_heading("标题D", body), True)
     expect(report["total_bytes"] == real["total_bytes"],
            f"干跑 {report['total_bytes']} 字节 != 真实写入 {real['total_bytes']} 字节")
+
+
+@case("upsert 第二次命中本地账本，不再依赖搜索索引")
+def _():
+    import os as _os
+    ledger = _os.path.join(tempfile.mkdtemp(), "idx.json")
+    old = _os.environ.get("IMA_NOTE_INDEX")
+    _os.environ["IMA_NOTE_INDEX"] = ledger
+    try:
+        u = FakeUploader()
+
+        def fake_request(path, body, timeout=30):
+            u.calls.append({"path": path, "body": body})
+            if path.endswith("import_doc"):
+                return {"code": 0, "data": {"note_id": "n1"}}
+            if path.endswith("get_doc_content"):
+                return {"code": 0, "data": {"content": "x"}}
+            return {"code": 0, "data": {}}
+
+        u._request = fake_request
+        u.upsert_note("标题L", "正文")
+        mark = len(u.calls)
+        r2 = u.upsert_note("标题L", "正文")
+        tail = u.calls[mark:]
+        expect(r2["action"] == "appended", f"第二次应追加: {r2.get('action')}")
+        expect(r2.get("source") == "ledger", f"应命中账本: {r2}")
+        expect(not [c for c in tail if c["path"].endswith("search_note")],
+               "命中账本后不应再调搜索")
+        expect(Path(ledger).exists(), "账本文件未落盘")
+    finally:
+        if old is None:
+            _os.environ.pop("IMA_NOTE_INDEX", None)
+        else:
+            _os.environ["IMA_NOTE_INDEX"] = old
+
+
+@case("账本条目失效时回落搜索，不盲目追加")
+def _():
+    import os as _os
+    d = tempfile.mkdtemp()
+    ledger = _os.path.join(d, "idx.json")
+    Path(ledger).write_text('{"标题M": "gone"}', encoding="utf-8")
+    old = _os.environ.get("IMA_NOTE_INDEX")
+    _os.environ["IMA_NOTE_INDEX"] = ledger
+    try:
+        u = FakeUploader()
+
+        def fake_request(path, body, timeout=30):
+            u.calls.append({"path": path, "body": body})
+            if path.endswith("get_doc_content"):
+                raise m.IMAError(-1, "笔记不存在")
+            if path.endswith("import_doc"):
+                return {"code": 0, "data": {"note_id": "n2"}}
+            return {"code": 0, "data": {}}
+
+        u._request = fake_request
+        r = u.upsert_note("标题M", "正文")
+        expect(r["action"] == "created", f"失效条目应回落并新建: {r.get('action')}")
+        expect(r["note_id"] == "n2", "应创建新笔记")
+    finally:
+        if old is None:
+            _os.environ.pop("IMA_NOTE_INDEX", None)
+        else:
+            _os.environ["IMA_NOTE_INDEX"] = old
 
 
 def main():
