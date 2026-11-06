@@ -35,7 +35,7 @@ uploader.get_media_info("media_id")
 uploader.check_repeated_names("kb_id", [("file.pdf", 1)])
 uploader.get_addable_knowledge_bases()  # 可添加的知识库
 uploader.add_note_to_kb("note_id", "标题", "kb_id")  # 笔记关联到知识库
-uploader.find_folder("文件夹名", "kb_id")  # 查找文件夹
+uploader.find_folder("kb_id", "文件夹名")  # 查找文件夹（注意参数顺序：kb_id 在前）
 ```
 
 ## 典型调用示例
@@ -90,6 +90,7 @@ info = uploader.get_media_info("media_id")
 | 搜索知识库 | `openapi/wiki/v1/search_knowledge_base` | POST |
 | 重名检查 | `openapi/wiki/v1/check_repeated_names` | POST |
 | 导入URL | `openapi/wiki/v1/import_urls` | POST |
+| 可添加知识库列表 | `openapi/wiki/v1/get_addable_knowledge_base_list` | POST |
 | 媒体信息 | `openapi/wiki/v1/get_media_info` | POST |
 | 图片转存换链（需云端会话） | `openapi/mcp_cloud_agent/upload_temp_file` | POST |
 | 换链取访问 URL（需云端会话） | `openapi/mcp_cloud_agent/get_access_url` | POST |

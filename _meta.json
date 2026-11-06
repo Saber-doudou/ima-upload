@@ -1,6 +1,6 @@
 {
-  "version": "3.4.0",
+  "version": "3.4.1",
   "publishedAt": 1792982218000,
   "readmeNoteId": null,
-  "changelog": "v3.4.0: 文档结构重构，无功能与代码逻辑变更。补 name/display_name/description 三项 frontmatter（此前无 frontmatter，平台按目录名注册并从正文前约 99 字截断作 description，路由描述成了表格碎片）；删「触发条件」章节（内容由 description 承接，对齐官方 Avoid Duplication）；CLI 逐命令示例下沉 references/cli.md（176 行）、Python API 与端点 Header 下沉 references/api.md（105 行）、已修复的历史坑迁 references/pitfalls.md（24 行）；正文 16,131 字符降至 8,746（-45.8%），落入官方正文 5k token 预算。命令保真校验：57 条命令、19 个参数、17 个子命令、22 个 API 方法、17 个端点零丢失；契约测试 64/64 通过"
+  "changelog": "v3.4.1: 外部审查修复，3 个静默数据缺陷 + 6 项一致性 + ps1 降级通道 4 处。P0① urllib 通道不校验 code，业务错误被当成功（抽出 _parse_payload 两通道共用）；P0② 降级分类把「响应解析失败」判成可重写，重复建笔记（黑名单改白名单，只在内容长度超限时降级）；P0③ download_media 同秒重名覆盖（改序号棘轮）。P1：add-url 兼容 list 响应、CONTENT_TYPE_MAP 补 xmind 两别名、图片签名补扩展名一致性、session.post 禁跟随重定向、inline 模式不再谎报 degrade。ps1：补 -Type 参数、输出改 ConvertTo-Json（原手拼 JSON 含未转义换行为非法 JSON）、UTF8Encoding 严格模式使 GBK 兜底生效。文档：api.md find_folder 参数顺序更正、补 get_addable_knowledge_base_list 端点、cli.md 删连排 ---。契约测试 64→72，新增 8 条先跑红后跑绿"
 }

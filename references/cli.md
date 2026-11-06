@@ -156,8 +156,6 @@ ima_upload.py kb find-folder "文件夹名" --kb kb_id --json
 
 ---
 
----
-
 ## 典型调用示例
 
 ```bash

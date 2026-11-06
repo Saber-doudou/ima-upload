@@ -1277,6 +1277,156 @@ def _():
     expect(not missing, f"缺少标签的 media_type: {missing}")
 
 
+# ---------------- 回归用例（2026-11-06 外部审查修复） ----------------
+# 这 8 条对应审查提交的 3 个 🔴 与 5 个 🟡，先于修复编写，
+# 目的：确保用例能对旧代码跑红，而不是写完代码再补一条恰好通过的断言。
+
+class _FakeHttpResp:
+    """最小化 urlopen 返回值，只需 read() 与上下文协议"""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def read(self):
+        return self._payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _bare_uploader():
+    """绕过 __init__ 的凭证加载，只测传输层"""
+    u = m.IMAUploader.__new__(m.IMAUploader)
+    u.client_id, u.api_key, u.session = "c", "k", None
+    return u
+
+
+@case("_request urllib 分支：业务错误必须抛出，不得返回空结果")
+def _():
+    orig_flag, orig_open = m.HAS_REQUESTS, m.urllib.request.urlopen
+    try:
+        m.HAS_REQUESTS = False
+        m.urllib.request.urlopen = lambda *a, **k: _FakeHttpResp(
+            '{"code":100005,"msg":"no permission"}'.encode("utf-8"))
+        try:
+            _bare_uploader()._request("openapi/note/v1/import_doc",
+                                      {"title": "t", "content": "c"})
+        except m.IMAError as e:
+            expect(e.code == 100005, f"错误码未透出: {e.code}")
+            return
+        raise AssertionError("urllib 分支未校验 code，业务错误被吞成成功")
+    finally:
+        m.HAS_REQUESTS, m.urllib.request.urlopen = orig_flag, orig_open
+
+
+@case("_request urllib 分支：非 JSON 响应必须抛出解析错误")
+def _():
+    orig_flag, orig_open = m.HAS_REQUESTS, m.urllib.request.urlopen
+    try:
+        m.HAS_REQUESTS = False
+        m.urllib.request.urlopen = lambda *a, **k: _FakeHttpResp(b"<html>502</html>")
+        try:
+            _bare_uploader()._request("openapi/note/v1/import_doc",
+                                      {"title": "t", "content": "c"})
+        except m.IMAError as e:
+            expect("响应解析失败" in (e.msg or ""), f"错误信息不含解析失败: {e.msg}")
+            return
+        raise AssertionError("非 JSON 响应被当成成功")
+    finally:
+        m.HAS_REQUESTS, m.urllib.request.urlopen = orig_flag, orig_open
+
+
+@case("降级分类：解析失败与网络超时不得判为可降级（防重复写入）")
+def _():
+    expect(m._is_content_related_error(
+        m.IMAError(-1, "响应解析失败: <html>502</html>")) is False,
+        "解析失败被误判为可降级，会导致重复建笔记")
+    expect(m._is_content_related_error(m.IMAError(-1, "connection timeout")) is False,
+           "网络超时被误判为可降级，会导致重复建笔记")
+    expect(m._is_content_related_error(
+        m.IMAError(-1, "content length exceeds limit")) is True,
+        "真正的长度超限应允许降级")
+    expect(m._is_content_related_error(m.IMAError(100005, "content too long")) is False,
+           "业务错误码不得降级")
+
+
+@case("download_media 同秒重名不覆盖（序号棘轮）")
+def _():
+    class DL(FakeUploader):
+        def _http_download(self, url, headers, dest_path, timeout=120):
+            with open(dest_path, "wb") as f:
+                f.write(b"payload")
+
+    d = tempfile.mkdtemp()
+    u = DL()
+    u.responses["openapi/wiki/v1/get_media_info"] = {
+        "code": 0,
+        "data": {"media_type": 1,
+                 "url_info": {"url": "https://x.com/a.md?media_title=doc.md",
+                              "headers": {}}},
+    }
+    paths = [u.download_media("m1", output_dir=d)["path"] for _ in range(3)]
+    expect(len(set(paths)) == 3, f"同秒下载发生覆盖: {paths}")
+    for p in paths:
+        expect(Path(p).exists(), f"文件未落盘: {p}")
+
+
+@case("kb add-url 兼容 list 形式响应")
+def _():
+    import contextlib
+    import io as _io
+
+    u = FakeUploader()
+    u.responses["openapi/wiki/v1/import_urls"] = {
+        "code": 0,
+        "data": {"results": [{"url": "https://a", "ret_code": 0},
+                             {"url": "https://b", "ret_code": 400}]},
+    }
+    args = type("Args", (), {"kb_id": "kb", "urls": ["https://a", "https://b"],
+                             "folder_id": None, "json": False})()
+    buf = _io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        m._cmd_kb_add_url(u, args)
+    out = buf.getvalue()
+    expect("1 个 URL 添加成功" in out, f"成功计数错误: {out}")
+
+
+@case("CONTENT_TYPE_MAP 覆盖官方 xmind 别名")
+def _():
+    expect(m.CONTENT_TYPE_MAP.get("application/vnd.xmind.workbook") == 14,
+           "缺 application/vnd.xmind.workbook → 14")
+    expect(m.CONTENT_TYPE_MAP.get("application/zip") == 14,
+           "缺 application/zip → 14")
+
+
+@case("_apply_transform inline 模式不谎报降级")
+def _():
+    _, batches, report = m._apply_transform("一段纯文本，没有图片。", True)
+    expect(batches is None, "纯文本不该产生批次")
+    expect(not report.get("degrade"), f"inline 模式谎报降级: {report.get('degrade')}")
+
+
+@case("图片扩展名与文件签名不一致时拦截（伪造扩展名 + 正确 content-type）")
+def _():
+    u = FakeUploader()
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+        f.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+        path = f.name
+    try:
+        try:
+            u.upload_file_to_kb(path, "kb1", content_type="image/png")
+        except m.IMAError as e:
+            expect("扩展名" in (e.msg or ""), f"错误信息未指向扩展名不一致: {e.msg}")
+            expect(len(u.calls) == 0, "预检失败不应发起请求")
+            return
+        raise AssertionError("伪造扩展名 + 正确 content-type 未被拦截")
+    finally:
+        Path(path).unlink()
+
+
 def main():
     print("=" * 62)
     print("  ima_upload 请求契约测试（不发起真实请求）")

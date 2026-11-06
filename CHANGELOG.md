@@ -2,13 +2,54 @@
 
 本文件记录 ima-upload 技能的版本变更。版本号遵循三段式（MAJOR.MINOR.PATCH），每段不超过一位数。
 
+## v3.4.1 — 2026-11-06
+
+外部审查修复。3 个会静默损坏数据的缺陷 + 6 项一致性问题 + `ps1` 降级通道 4 处。全部遵循「先写用例跑红、再改代码跑绿」，契约测试 64 → 72 项。
+
+### 修复（数据正确性，P0）
+
+- **urllib 通道吞掉业务错误**（`_request`）：requests 缺失时走 urllib 分支，直接返回 `json.loads` 结果而不校验 `code`。实测 `{"code":100005,"msg":"无权限"}` 会被当成成功，CLI 打印「笔记创建成功」，`--log` 还会把空 `note_id` 写进映射文件。修复：抽出 `_parse_payload()`，两条通道共用同一套解析；`HTTPError` 的响应体也交给它，4xx/5xx 仍能拿到真实错误码。同时把 `urllib.request` / `urllib.error` 改为无条件导入（原先只在 `except ImportError` 分支导入，实际能跑是靠在 requests 传递导入的副作用上）。
+- **降级分类把「响应解析失败」判成可重写，产生重复笔记**（`_is_content_related_error`）：原黑名单判定只排除业务码与几个关键词，而 `_parse_response` 对解析失败构造的正是 `code=-1` + `响应解析失败: ...`。于是 `--transform-images` 且内容可切 ≥2 批时，首次可能已在服务端成功的写入会再发一次 `import_doc`。修复：改白名单，只有明确指向内容体积/长度超限（`content length` / `413` / `内容过长` 等）才允许降级。取向是「宁可少降级」——误判成可降级是不可回滚的脏数据，误判成不可降级只是把错误如实报出。
+- **`download_media` 同秒重名覆盖**：原逻辑只在 `dest.exists()` 时加一次秒级时间戳且不复查，同秒连续下载算出同一个名字，`_http_download` 以 `"wb"` 打开，后写覆盖前写。修复：改序号棘轮（`_YYYYMMDDHHmmss`、`_1`、`_2`…，上限 99），与上传侧 keep-copy 口径对齐。
+
+### 修复（一致性与安全，P1）
+
+- **`_cmd_kb_add_url` 兼容 list 响应**：原实现假设 `results` 是 dict，官方返回 list 时 `AttributeError: 'list' object has no attribute 'values'`。
+- **`CONTENT_TYPE_MAP` 补 xmind 别名**：`application/vnd.xmind.workbook`、`application/zip` → 14，对齐官方 `preflight-check.cjs:130-131`。副作用：普通 zip 也会被当作 xmind 放行，与官方同口径。
+- **图片签名补扩展名一致性校验**：原先只比签名与 `content_type`，`PNG 内容改名 .pdf + 显式 --content-type image/png` 会被放过。现对齐官方 `preflight-check.cjs:222-230`。
+- **`session.post` 禁止跟随重定向**：requests 默认跟随 302，会把 `ima-openapi-clientid` / `ima-openapi-apikey` 带到重定向目标。
+- **`_apply_transform` 不再谎报降级**：inline 模式原先也输出 `degrade: "inline→batched (on-error)"`，dry-run 报告会被读成「本次已降级」。现在只在真的产生批次时给值，否则为 `null`。
+
+### 修复（`scripts/ima_upload.ps1` 降级通道）
+
+仅静态语法检查 + 无网络路径实测，**未做真实上传验证**（该脚本只在 Python 不可用时启用）。
+
+- **`-Type` 参数缺失**：帮助里写着 `search "关键词" -Type content`，但 param 块没有 `-Type`，实参会被参数绑定拒绝；且判定写的是 `$File -eq "content"`（`$File` 是文件路径参数）。修复：补 `[ValidateSet("title","content")]$Type`，判定改用 `$Type`。
+- **`-Json` 输出字节数组**：多处 `Write-Output ([Encoding]::UTF8.GetBytes(...))`，管道下游拿到的是数字序列而非 JSON 文本。修复：统一走 `ConvertTo-Json` 输出字符串，并在启动时设 `[Console]::OutputEncoding = UTF8`。
+- **手拼 JSON 未转义**：错误消息里的 `\`n` 换行、路径反斜杠被直接插进双引号 JSON 字面量，产出的是非法 JSON。修复：新增 `Write-JsonError`，用 `ConvertTo-Json` 生成；实测凭证缺失场景的输出已可被 `ConvertFrom-Json` 解析（3 行 msg 完整保留）。
+- **UTF-8 兜底永不生效**：`[Encoding]::UTF8` 遇到非法字节会替换成 U+FFFD 而不抛异常，`catch` 分支永远走不到。修复：改用 `New-Object System.Text.UTF8Encoding($false, $true)`（throwOnInvalidBytes），GBK 兜底才可能触发。
+
+### 文档修正
+
+- `references/api.md`：`find_folder` 参数顺序改为 `(kb_id, folder_name)`（原文档与代码相反，照文档调用返回空列表）；端点表补 `get_addable_knowledge_base_list`（代码在用、文档漏记）。
+- `references/cli.md`：删除连排的两条 `---`（v3.4.0 声称已修，实际去重逻辑只判紧邻，中间夹空行时漏掉）。
+- 更正 v3.4.0 条目里 description 的字符数：481 → **499**（YAML 折叠后实测值；481 是加「同步到 IMA 云端」之前的旧数）。
+
+### 契约测试
+
+64 → **72 项**。新增 8 条覆盖上述 P0/P1：urllib 业务错误、urllib 非 JSON 响应、降级白名单正反例、下载同秒棘轮、add-url list 响应、xmind 别名、inline 不谎报降级、图片扩展名伪造。编写顺序为先对 v3.4.0 代码跑红（8 条全红，64/72）再修复跑绿（72/72）。
+
+### 未修
+
+- `_safe_filename` 未限制文件名长度（超长名在部分文件系统会截断或报错），风险低，未纳入本次。
+
 ## v3.4.0 — 2026-11-06
 
 文档结构重构。无功能变更、无代码逻辑改动，`scripts/ima_upload.py` 仅同步两处版本号字面量。
 
 ### 变更
 
-- **补 frontmatter（`name` / `display_name` / `description`）**：此前本文件无任何 frontmatter。实测平台在缺失时按目录名注册技能、并从正文前约 99 字截取 description，实际生成的描述末尾停在 `| 模块 | 功能 | `，是一段残缺表格，等于丧失了路由信号。现显式声明 description（481 字符），覆盖触发场景、口语说法、文件类型、业务场景与排除边界。
+- **补 frontmatter（`name` / `display_name` / `description`）**：此前本文件无任何 frontmatter。实测平台在缺失时按目录名注册技能、并从正文前约 99 字截取 description，实际生成的描述末尾停在 `| 模块 | 功能 | `，是一段残缺表格，等于丧失了路由信号。现显式声明 description（YAML 折叠后 499 字符），覆盖触发场景、口语说法、文件类型、业务场景与排除边界。
 - **删除「触发条件」章节**：7 条触发意图已全部并入 description，同一信息不再两处维护，对齐官方「Avoid Duplication: Information should exist in either SKILL.md or reference files, not both」。
 - **CLI 逐命令示例下沉 `references/cli.md`**（176 行，标题层级已上提一级）：正文仅保留「确定调用方式」场景表、文件上传安全门、返回语义补充与资源清单表。原「CLI 命令参考」下 17 个 `####` 子命令块整体搬移，未改写任何命令、参数或引号。
 - **Python API / API 端点 / Header 格式下沉 `references/api.md`**（105 行）。

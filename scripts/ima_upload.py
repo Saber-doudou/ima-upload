@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-IMA上传工具 - Python封装版本 v3.4.0
+IMA上传工具 - Python封装版本 v3.4.1
 
 功能概览：
   笔记模块：create / upsert / append / search / list / read / image-url
@@ -71,15 +71,17 @@ _CONFIG_LOCATIONS = [
 ]
 
 # 尝试导入requests，失败时使用urllib
-# 注意：urllib.parse 始终需要（COS 签名用到 quote()）
+# urllib.parse / request / error 无条件导入：COS 签名用到 quote()，
+# 且下载与降级通道始终依赖 urlopen；此前只写在 except 分支里，
+# 能跑是靠 requests 传递导入的副作用，属脆弱依赖。
 import urllib.parse
+import urllib.request
+import urllib.error
 
 try:
     import requests
     HAS_REQUESTS = True
 except ImportError:
-    import urllib.request
-    import urllib.error
     HAS_REQUESTS = False
 
 # ========== 文件类型映射（与官方 preflight-check.cjs 对齐） ==========
@@ -146,6 +148,9 @@ CONTENT_TYPE_MAP.update({
     "text/x-markdown": 7,
     "application/md": 7,
     "application/markdown": 7,
+    # xmind 的两种官方别名（preflight-check.cjs:130-131）
+    "application/vnd.xmind.workbook": 14,
+    "application/zip": 14,
 })
 
 
@@ -206,20 +211,28 @@ def _safe_filename(raw_name, fallback="download"):
     return name
 
 
+# 仅这些错误才值得「分批重写」：必须明确指向内容体积/长度超限。
+# 刻意不收宽泛词（content / limit / 超限），否则「响应解析失败」这类
+# 首次请求可能已在服务端成功的错误会被判成可重写，产生重复笔记。
+_CONTENT_ERROR_PATTERNS = (
+    "413", "payload too large", "request entity too large",
+    "content length", "content is too long", "content too large",
+    "content size", "too many characters", "text too long",
+    "内容长度", "内容过长", "内容过大", "正文过长", "正文长度", "文本过长",
+)
+
+
 def _is_content_related_error(err):
     """
-    降级错误分类（P2-7 方案 A）：仅疑似 content 相关错误才值得分批降级重试。
-    业务错误码（非 -1，如敏感词/权限/配额）与标题/权限/配额/敏感词类消息直接原样抛出，不做白重试。
+    降级错误分类（白名单式）。
+    只有明确指向内容体积/长度超限的错误才分批重写，其余原样抛出。
+    方向是「宁可少降级」：误判成可降级会产生不可自动回滚的重复写入，
+    误判成不可降级只是把错误如实报给用户。
     """
     if err.code != -1:
         return False
-    msg = err.msg or ""
-    msg_l = msg.lower()
-    unrelated = ("标题", "权限", "配额", "敏感词", "违规",
-                 "title", "permission", "quota", "sensitive", "forbidden", "unauthorized")
-    if any(k in msg_l or k in msg for k in unrelated):
-        return False
-    return True
+    msg = (err.msg or "").lower()
+    return any(p in msg for p in _CONTENT_ERROR_PATTERNS)
 
 
 # ========== 笔记插图转存（与官方 note-images.cjs 对齐） ==========
@@ -375,8 +388,9 @@ def _apply_transform(content, transform_images):
         "images": stats,
         "total_bytes": size,
         "mode": "batched" if batches else "inline",
-        # 降级可读标记（P0-3）：体积超限已降级 / inline 写入报错时自动降级
-        "degrade": "inline→batched (size)" if batches else "inline→batched (on-error)",
+        # 降级标记只在真的降级时给值。原先 inline 分支也填 "on-error"，
+        # 但那是"策略"不是"事件"，dry-run 报告里会被读成"本次已降级"。
+        "degrade": "inline→batched (size)" if batches else None,
         "batches": [
             {"index": i + 1, "type": b["type"], "bytes": len(b["content"].encode("utf-8"))}
             for i, b in enumerate(split_note_batches(transformed))
@@ -434,36 +448,53 @@ class IMAUploader:
         return None
 
     def _request(self, api_path, body, timeout=30):
-        """发送API请求"""
+        """
+        发送 API 请求。
+        requests 与 urllib 两条通道必须共用同一套响应解析：
+        此前 urllib 分支直接返回 json.loads 的结果、不校验 code，
+        业务错误（如 100005 无权限）会被当成成功，CLI 打印"创建成功"并把空 note_id 写进映射文件。
+        """
         url = f"{self.BASE_URL}/{api_path}"
 
         if HAS_REQUESTS:
-            resp = self.session.post(url, json=body, timeout=timeout)
+            # 禁跟随重定向：默认跟随会把 clientid/apikey 两个 header 一并带到 302 目标
+            resp = self.session.post(url, json=body, timeout=timeout, allow_redirects=False)
             return self._parse_response(resp)
-        else:
-            data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-            req = urllib.request.Request(
-                url, data=data,
-                headers={
-                    "ima-openapi-clientid": self.client_id,
-                    "ima-openapi-apikey": self.api_key,
-                    "Content-Type": "application/json; charset=utf-8"
-                },
-                method="POST"
-            )
-            with urllib.request.urlopen(req, timeout=timeout) as response:
-                return json.loads(response.read().decode("utf-8"))
 
-    def _parse_response(self, resp):
-        """解析API响应"""
+        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=data,
+            headers={
+                "ima-openapi-clientid": self.client_id,
+                "ima-openapi-apikey": self.api_key,
+                "Content-Type": "application/json; charset=utf-8"
+            },
+            method="POST"
+        )
         try:
-            result = resp.json()
-        except json.JSONDecodeError:
-            result = {"code": -1, "msg": f"响应解析失败: {resp.text[:200]}"}
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                raw = response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as e:
+            # 4xx/5xx 的响应体仍可能是标准 JSON 错误结构，交由统一解析给出真实错误码
+            raw = e.read().decode("utf-8", errors="replace")
+        return self._parse_payload(raw)
 
+    @staticmethod
+    def _parse_payload(raw):
+        """把响应文本解析为 API 结果。两条传输通道共用，防止契约分叉。"""
+        try:
+            result = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            raise IMAError(-1, f"响应解析失败: {str(raw)[:200]}")
+        if not isinstance(result, dict):
+            raise IMAError(-1, f"响应格式异常（非 JSON 对象）: {str(raw)[:200]}")
         if result.get("code") != 0:
             raise IMAError(result.get("code", -1), result.get("msg", "未知错误"))
         return result
+
+    def _parse_response(self, resp):
+        """解析 requests 响应对象"""
+        return self._parse_payload(resp.text)
 
     # ==================== 笔记模块 ====================
 
@@ -874,9 +905,21 @@ class IMAUploader:
         out_dir.mkdir(parents=True, exist_ok=True)
         dest = out_dir / file_name
         if dest.exists():
+            # 序号棘轮：与上传侧 keep-copy 口径一致。
+            # 只在 exists 时加一次秒级时间戳，同秒内多次下载会算出同一个名字，
+            # 后写覆盖前写（_http_download 用 "wb"），前一次下载内容直接丢失。
             import datetime
+            orig_stem, orig_suffix = dest.stem, dest.suffix
             ts = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-            dest = out_dir / f"{dest.stem}_{ts}{dest.suffix}"
+            base = f"{orig_stem}_{ts}"
+            cand = out_dir / f"{base}{orig_suffix}"
+            seq = 0
+            while cand.exists():
+                seq += 1
+                if seq > 99:
+                    raise IMAError(-1, f"同名文件过多（已尝试 99 个序号），已拒绝: {file_name}")
+                cand = out_dir / f"{base}_{seq}{orig_suffix}"
+            dest = cand
 
         # 落点必须收敛在 out_dir 之内（resolve 后校验，防符号链接/绝对路径绕过）
         out_root = out_dir.resolve()
@@ -1004,7 +1047,16 @@ class IMAUploader:
         if media_type == 9:
             with open(file_path, "rb") as fh:
                 head = fh.read(12)
-            _validate_image_signature(head, content_type, source=file_name)
+            detected = _validate_image_signature(head, content_type, source=file_name)
+            # 官方 preflight-check.cjs:222-230 还校验扩展名与真实签名一致。
+            # 只比 content_type 会放过「PNG 内容改名为 .pdf + 显式 --content-type image/png」。
+            ext_entry = EXT_MAP.get(ext)
+            if ext_entry and ext_entry["content_type"] != detected:
+                raise IMAError(
+                    -1,
+                    f"图片扩展名与文件签名不一致：实际 {detected}，"
+                    f"扩展名 .{ext} 应为 {ext_entry['content_type']}: {file_name}",
+                )
 
         # Step 2: 大小检查
         size_limit = SIZE_LIMITS.get(media_type, DEFAULT_SIZE_LIMIT)
@@ -1172,7 +1224,7 @@ class IMAError(Exception):
 
 def _build_parser():
     parser = argparse.ArgumentParser(
-        description="IMA笔记上传工具 v3.4.0（笔记+知识库）",
+        description="IMA笔记上传工具 v3.4.1（笔记+知识库）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 笔记操作：
@@ -1642,13 +1694,22 @@ def _cmd_kb_add_url(uploader, args):
     results = uploader.import_urls(args.kb_id, args.urls, args.folder_id)
     if args.json:
         print(json.dumps(results, ensure_ascii=False, indent=2))
+        return
+    # 官方返回可能是 dict{url: {...}}，实测也可能给 list[{url, ret_code}]，两种都要能吃下
+    if isinstance(results, dict):
+        items = list(results.items())
+    elif isinstance(results, list):
+        items = [(r.get("url", ""), r) for r in results if isinstance(r, dict)]
     else:
-        success = sum(1 for r in results.values() if r.get("ret_code") == 0)
-        fail = len(results) - success
-        print(f"✅ {success} 个 URL 添加成功" + (f"，{fail} 个失败" if fail else ""))
-        for url, r in results.items():
-            if r.get("ret_code") != 0:
-                print(f"   ❌ {url}: ret_code={r.get('ret_code')}")
+        items = []
+    success = sum(1 for _, r in items if isinstance(r, dict) and r.get("ret_code") == 0)
+    fail = len(items) - success
+    print(f"✅ {success} 个 URL 添加成功" + (f"，{fail} 个失败" if fail else ""))
+    for url, r in items:
+        if not isinstance(r, dict):
+            print(f"   ❌ {url}: 响应项格式异常")
+        elif r.get("ret_code") != 0:
+            print(f"   ❌ {url}: ret_code={r.get('ret_code')}")
 
 
 def _cmd_kb_media(uploader, args):
