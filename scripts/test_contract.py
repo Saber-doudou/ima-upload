@@ -1462,6 +1462,36 @@ def _():
            f"ctx 头缺失或格式不符: {headers.get('ima-openapi-ctx')}")
 
 
+@case("content-type 归一化：剥离参数、大小写、空白")
+def _():
+    expect(m._normalize_content_type("Image/PNG") == "image/png", "大小写未归一")
+    expect(m._normalize_content_type("image/png; charset=utf-8") == "image/png", "参数未剥离")
+    expect(m._normalize_content_type("  application/pdf  ") == "application/pdf", "首尾空白未处理")
+    expect(m._normalize_content_type(None) == "", "None 未返回空串")
+    expect(m._normalize_content_type("") == "", "空串未返回空串")
+
+
+@case("content-type 带参数/大写时不再误判为不支持的类型")
+def _():
+    # .bin 不在 EXT_MAP；只有归一化后命中 content-type，才不会退回扩展名判定
+    with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as f:
+        f.write(b"%PDF-1.4\n")
+        path = f.name
+    try:
+        u = FakeUploader()
+        try:
+            u.upload_file_to_kb(path, "kb1", content_type="Application/PDF; charset=binary")
+        except m.IMAError as e:
+            expect("不支持的文件类型" not in (e.msg or ""),
+                   f"归一化失败，退回了扩展名判定: {e.msg}")
+            return
+        except Exception:
+            return
+        return
+    finally:
+        Path(path).unlink()
+
+
 def main():
     print("=" * 62)
     print("  ima_upload 请求契约测试（不发起真实请求）")

@@ -1,6 +1,6 @@
 {
-  "version": "3.4.2",
+  "version": "3.4.3",
   "publishedAt": 1792982218000,
   "readmeNoteId": null,
-  "changelog": "v3.4.2: 与官方对齐 + 两处修正。补 ima-openapi-ctx: skill_version=<ver> 请求头（官方每个请求都带，版本从 _meta.json 读、不新增同步点；实测带该头调用正常返回 17 个知识库）；修 file:///C:/x 被多切一个斜杠导致 Windows 必然找不到文件（官方 localPath 同缺陷，未跟随）；踩坑记录补两条现行文档缺失的已知限制：插图不支持相对路径、小内容报错不自动降级。契约测试 72→74"
+  "changelog": "v3.4.3: content-type 口径统一。原实现只在视频黑名单处做 split(;)/strip/lower 归一化，映射表却拿原始串查表，导致 --content-type \"Image/PNG\" 或 \"image/png; charset=utf-8\" 静默退回扩展名，扩展名不认识时误报「不支持的文件类型」。抽出 _normalize_content_type() 两处共用。契约测试 74→76，新增用例先对 v3.4.2 跑红（74/76）再跑绿（76/76）"
 }

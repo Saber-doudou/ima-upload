@@ -11,7 +11,7 @@ description: "IMA（腾讯 ima）云端笔记与知识库的本地直连上传�
   不适用：只需要把本地图片转成外链再嵌入时用官方 ima-skills（需云代理会话）；普通对话记忆整理用 memory-consolidate。"
 ---
 
-# IMA 笔记上传 Skill v3.4.2
+# IMA 笔记上传 Skill v3.4.3
 
 腾讯 IMA 云端笔记 + 知识库管理工具。整合官方 ima-skill 知识库模块，保留本地独有优势。
 
@@ -179,7 +179,7 @@ python scripts/check_official_skill.py --official-dir PATH  # 指定官方包目
 写操作的正确性用 mock 验证，不产生真实数据：
 
 ```bash
-python scripts/test_contract.py        # 74 项契约检查
+python scripts/test_contract.py        # 76 项契约检查
 python scripts/test_contract.py -v     # 附失败明细
 ```
 

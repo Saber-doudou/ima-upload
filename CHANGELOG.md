@@ -2,6 +2,23 @@
 
 本文件记录 ima-upload 技能的版本变更。版本号遵循三段式（MAJOR.MINOR.PATCH），每段不超过一位数。
 
+## v3.4.3 — 2026-11-07
+
+content-type 口径统一。契约测试 74 → 76 项。
+
+### 修复
+
+- **content-type 归一化不一致**：视频黑名单判定做了 `split(";")` / `strip` / `lower`（`UNSUPPORTED_VIDEO_CT` 能命中 `Video/MP4; charset=x`），但 `CONTENT_TYPE_MAP` 查询直接拿原始串，于是 `--content-type "Image/PNG"` 或 `image/png; charset=utf-8` 查不到映射 → 静默退回扩展名判定 → 扩展名不认识时报「不支持的文件类型: .bin」，把真实原因（content-type 写法带参数/大写）掩盖掉。
+  修复：抽出 `_normalize_content_type()`，两处共用；映射命中后回写归一化值，避免带参数的 MIME 被原样送到服务端。
+
+### 契约测试
+
+74 → **76 项**：新增归一化单元用例（大小写/参数/空白/None/空串五种输入）、端到端用例（`.bin` + `Application/PDF; charset=binary` 不得报「不支持的文件类型」）。编写顺序为先对 v3.4.2 跑红（**74/76**，两条新用例均失败）、修复后跑绿（**76/76**），用 `git stash` 回退代码验证过红态。
+
+### 已评估但未做
+
+- **`_safe_filename` 长度校验**：实测超长写入会被系统拦住，不会静默损坏，按 Master 判断不加截断策略。附带发现：失败时报 `OSError [Errno 22] Invalid argument`（不是「文件名太长」），错误码有误导性，属可选优化，本次未动。
+
 ## v3.4.2 — 2026-11-07
 
 与官方行为对齐 + 两处修正。契约测试 72 → 74 项。

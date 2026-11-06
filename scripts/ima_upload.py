@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-IMA上传工具 - Python封装版本 v3.4.2
+IMA上传工具 - Python封装版本 v3.4.3
 
 功能概览：
   笔记模块：create / upsert / append / search / list / read / image-url
@@ -263,6 +263,18 @@ DATA_URL_RE = re.compile(r"^data:(image/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]
 MAX_NOTE_IMAGE_SIZE = 3 * 1024 * 1024  # 官方严格小于 3MiB
 BATCH_INLINE_LIMIT = 2 * 1024 * 1024   # 超过则降级官方分批 append_doc 模式
 _NOTE_IMAGE_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
+
+
+def _normalize_content_type(raw):
+    """
+    content-type 归一化：剥离 `;charset=` 之类参数、去首尾空白、转小写。
+    空值返回空串。
+
+    为什么需要：视频黑名单判定做了这层归一化，映射表查询却直接拿原始串去查，
+    于是 `--content-type "Image/PNG"` 或 `image/png; charset=utf-8` 会静默退回扩展名；
+    扩展名不认识时就报「不支持的文件类型」，把真正原因（content-type 写法带参数）掩盖掉。
+    """
+    return raw.split(";", 1)[0].strip().lower() if raw else ""
 
 
 def _local_image_path(source):
@@ -1045,16 +1057,17 @@ class IMAUploader:
 
         # Step 1: 文件类型检查（显式 content-type 优先于扩展名）
         ext = file_path.suffix.lstrip(".").lower()
+        ct_norm = _normalize_content_type(content_type)
         if ext in UNSUPPORTED_VIDEO_EXT:
             raise IMAError(-1, f"不支持的视频文件类型: .{ext}。请使用 IMA 桌面端添加视频。")
-        if content_type and content_type.split(";", 1)[0].strip().lower() in UNSUPPORTED_VIDEO_CT:
-            raise IMAError(-1, f"不支持的视频内容类型: {content_type}。请使用 IMA 桌面端添加视频。")
+        if ct_norm and ct_norm in UNSUPPORTED_VIDEO_CT:
+            raise IMAError(-1, f"不支持的视频内容类型: {ct_norm}。请使用 IMA 桌面端添加视频。")
 
         mapping = None
-        if content_type:
-            ct_mt = CONTENT_TYPE_MAP.get(content_type)
+        if ct_norm:
+            ct_mt = CONTENT_TYPE_MAP.get(ct_norm)
             if ct_mt is not None:
-                mapping = {"media_type": ct_mt, "content_type": content_type}
+                mapping = {"media_type": ct_mt, "content_type": ct_norm}
         if mapping is None:
             if ext not in EXT_MAP:
                 raise IMAError(-1, f"不支持的文件类型: .{ext}。支持的类型: {', '.join(sorted(EXT_MAP.keys()))}")
@@ -1246,7 +1259,7 @@ class IMAError(Exception):
 
 def _build_parser():
     parser = argparse.ArgumentParser(
-        description="IMA笔记上传工具 v3.4.2（笔记+知识库）",
+        description="IMA笔记上传工具 v3.4.3（笔记+知识库）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 笔记操作：
