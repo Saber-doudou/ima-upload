@@ -1,6 +1,6 @@
 {
-  "version": "3.4.8",
+  "version": "3.4.9",
   "publishedAt": 1792982218000,
   "readmeNoteId": null,
-  "changelog": "v3.4.8: 给 upsert 加本地幂等账本，解决连发同一标题重复建笔记。v3.4.7 已修标题源，但真机复测仍重复——根因是 search_note 索引延迟（秒级到十几秒），先搜后建在最终一致索引上必然竞态。IMA import_doc 无唯一键也无条件创建，服务端不给屏障，只能客户端自建：新增 ~/.config/ima/note_index.json 记账（标题→note_id），create 记账、upsert 先查账本，命中则直接追加并先 get_note_content 校验有效性（失效即回落搜索）；原子写、失败静默。实跑三次 upsert 同一标题只建一条（第2/3次 source=ledger）。账本不跨设备同步。契约测试 81→83，并修掉用例污染真实账本的问题（现每用例独立临时账本）"
+  "changelog": "v3.4.9: 修 v3.4.8 账本两个缺陷，并更正 v3.4.8 的过度承诺。①账本 key 原先绑在 content 首行标题上，content 一变（如第二次只追加纯文本）key 从 标题B 变成 标题A，miss 后重复建笔记——改为双键记账（CLI title 稳定键 + content 标题别名键）。②失效校验只看异常，而无效 note_id 返回 code=0+空内容不抛异常，导致直接往死 ID 追加、且不删账本条目——改为异常或空内容都判失效、真正删条目、回落搜索。③create --dedup 未接账本也没用 _effective_title，已统一。契约测试 83→86，三条新用例均用 git stash 验过红态；实跑不同 content 连发只建一条。文档补账本真实边界（多进程无锁、明文落盘、无上限、写失败静默），清理真实账本残条目"
 }

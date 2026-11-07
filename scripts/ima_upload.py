@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-IMA上传工具 - Python封装版本 v3.4.8
+IMA上传工具 - Python封装版本 v3.4.9
 
 功能概览：
   笔记模块：create / upsert / append / search / list / read / image-url
@@ -300,12 +300,42 @@ def _save_note_index(index):
         pass
 
 
-def _remember_note(title, note_id):
-    if not title or not note_id:
+def _remember_note(note_id, *titles):
+    """
+    记录 标题 → note_id。可一次写多个别名：CLI 传入的 title 与 content 里的一级标题。
+
+    为什么存两个键：CLI title 是**稳定**的（同一次任务不会变），content 标题会随内容变化。
+    只存 content 标题的话，第二次 upsert 换成不带标题行的纯文本就会 miss。
+    只存 CLI title 的话，别处按 content 标题来 upsert 时会 miss。两个都存最稳。
+    """
+    keys = [t for t in titles if t]
+    if not note_id or not keys:
         return
     index = _load_note_index()
-    index[title] = note_id
+    for k in keys:
+        index[k] = note_id
     _save_note_index(index)
+
+
+def _forget_notes(*titles):
+    """条目失效时真正从文件里删掉，避免残留在后续查询里反复命中。"""
+    keys = [t for t in titles if t]
+    if not keys:
+        return
+    index = _load_note_index()
+    changed = False
+    for k in keys:
+        if k in index:
+            del index[k]
+            changed = True
+    if changed:
+        _save_note_index(index)
+
+
+def _lookup_ledger(title, content):
+    """按 CLI title 与 content 标题两个键查账本，返回 note_id 或 None。"""
+    index = _load_note_index()
+    return index.get(title) or index.get(_effective_title(title, content))
 
 
 def _clean_title(title):
@@ -646,7 +676,7 @@ class IMAUploader:
                 body["folder_id"] = folder_id
             result = self._request("openapi/note/v1/import_doc", body)
             note_id = result.get("data", {}).get("note_id", "")
-            _remember_note(effective, note_id)
+            _remember_note(note_id, title, effective)
             return {"note_id": note_id, "title": effective}
 
         transformed, batches, _ = _apply_transform(content, True)
@@ -669,7 +699,7 @@ class IMAUploader:
                     raise IMAError(e2.code, f"inline 与 batched 均失败: inline（{e.msg}） batched（{e2.msg}）")
             raise
         note_id = result.get("data", {}).get("note_id", "")
-        _remember_note(effective, note_id)
+        _remember_note(note_id, title, effective)
         return {"note_id": note_id, "title": effective}
 
     def append_note(self, note_id, content, transform_images=False):
@@ -732,7 +762,7 @@ class IMAUploader:
         result = self._request("openapi/note/v1/import_doc", body)
         note_id = result.get("data", {}).get("note_id", "")
         batch_title = _effective_title(title, first["content"])
-        _remember_note(batch_title, note_id)
+        _remember_note(note_id, title, batch_title)
         if rest:
             self._write_note_batches(note_id, rest)
         return {"note_id": note_id, "title": batch_title,
@@ -810,12 +840,18 @@ class IMAUploader:
         # 先查本地账本：search_note 是最终一致的（新建后要过几秒到十几秒才可搜到），
         # 单靠搜索做「先查后建」在连发时会重复建笔记——这是 search-then-create 的经典竞态。
         # 服务端没有条件创建 / 唯一键，只能在客户端做写屏障：自己记住建过的 note_id。
-        cached = _load_note_index().get(lookup_title)
+        # 按 CLI title 与 content 标题双键查，避免 content 一变就 hit 不到。
+        cached = _lookup_ledger(title, content)
         if cached:
             try:
-                self.get_note_content(cached)   # 校验条目仍有效（可能在客户端被删）
+                body = self.get_note_content(cached)
             except Exception:
-                cached = None                    # 失效则丢弃，回落搜索
+                body = ""
+            # 注意：无效 note_id 时服务端返回 code=0 + 空内容（见 _cmd_read 的注释），
+            # 不抛异常。只看异常会漏判，必须同时把「空内容」视为失效。
+            if not (body or "").strip():
+                _forget_notes(title, lookup_title)
+                cached = None
         if cached:
             self.append_note(cached, content, transform_images=transform_images)
             return {
@@ -829,7 +865,7 @@ class IMAUploader:
         existing = self.find_exact_title(lookup_title)
         if existing:
             target = existing[0]
-            _remember_note(lookup_title, target["note_id"])
+            _remember_note(target["note_id"], title, lookup_title)
             self.append_note(target["note_id"], content, transform_images=transform_images)
             return {
                 "note_id": target["note_id"],
@@ -1383,7 +1419,7 @@ class IMAError(Exception):
 
 def _build_parser():
     parser = argparse.ArgumentParser(
-        description="IMA笔记上传工具 v3.4.8（笔记+知识库）",
+        description="IMA笔记上传工具 v3.4.9（笔记+知识库）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 笔记操作：
@@ -1609,7 +1645,21 @@ def _cmd_create(uploader, args):
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return
     if getattr(args, 'dedup', False):
-        existing = uploader.find_exact_title(args.title)
+        # 与 upsert 同源：先查账本（绕开搜索索引延迟），再回落搜索。
+        # 查重标题必须用服务端真实标题（_effective_title），否则 content 自带标题时永远查不到。
+        effective = _effective_title(args.title, content)
+        cached = _lookup_ledger(args.title, content)
+        if cached:
+            try:
+                body = uploader.get_note_content(cached)
+            except Exception:
+                body = ""
+            if not (body or "").strip():
+                _forget_notes(args.title, effective)
+                cached = None
+        existing = uploader.find_exact_title(effective)
+        if not existing and cached:
+            existing = [{"note_id": cached, "title": effective}]
         if existing:
             if args.json:
                 print(json.dumps({

@@ -1652,6 +1652,107 @@ def _():
             _os.environ["IMA_NOTE_INDEX"] = old
 
 
+@case("同标题不同 content 连发 upsert 仍只建一条（账本 key 不随 content 漂移）")
+def _():
+    u = FakeUploader()
+    server_title = {}
+
+    def fake_request(path, body, timeout=30):
+        u.calls.append({"path": path, "body": body})
+        if path.endswith("search_note"):
+            t = server_title.get("title")
+            items = [{"note_book_info": {"note_id": "n1", "title": t}}] if t else []
+            return {"code": 0, "data": {"search_note_infos": items}}
+        if path.endswith("get_doc_content"):
+            return {"code": 0, "data": {"content": "x"}}
+        if path.endswith("import_doc"):
+            server_title["title"] = body["content"].split("\n", 1)[0].lstrip("# ").strip()
+            return {"code": 0, "data": {"note_id": "n1"}}
+        return {"code": 0, "data": {}}
+
+    u._request = fake_request
+    r1 = u.upsert_note("标题A", "# 标题B\n\n正文一")
+    r2 = u.upsert_note("标题A", "追加内容（没有标题行）")
+    expect(r1["action"] == "created", f"首次应新建: {r1['action']}")
+    expect(r2["action"] == "appended",
+           f"第二次 content 无标题行时应仍命中账本，实际 {r2['action']}——账本 key 随 content 漂移了")
+    expect(r2["note_id"] == r1["note_id"], f"note_id 不一致: {r1['note_id']} vs {r2['note_id']}")
+
+
+@case("账本条目返回空内容时判失效并回落搜索（无效 note_id 返回 code=0）")
+def _():
+    import os as _os
+    ledger = _os.path.join(tempfile.mkdtemp(), "idx.json")
+    Path(ledger).write_text('{"标题E": "DEAD"}', encoding="utf-8")
+    old = _os.environ.get("IMA_NOTE_INDEX")
+    _os.environ["IMA_NOTE_INDEX"] = ledger
+    try:
+        u = FakeUploader()
+
+        def fake_request(path, body, timeout=30):
+            u.calls.append({"path": path, "body": body})
+            if path.endswith("get_doc_content"):
+                # 无效 note_id 的真实表现：code=0 + 空内容，不抛异常
+                return {"code": 0, "data": {"content": ""}}
+            if path.endswith("import_doc"):
+                return {"code": 0, "data": {"note_id": "n3"}}
+            return {"code": 0, "data": {}}
+
+        u._request = fake_request
+        r = u.upsert_note("标题E", "正文")
+        expect(r["note_id"] != "DEAD", f"往失效 note_id 追加了: {r}")
+        expect(r["action"] == "created", f"应回落并新建: {r['action']}")
+        expect(any(c["path"].endswith("search_note") for c in u.calls),
+               "未回落到搜索（说明空内容没被判为失效）")
+    finally:
+        if old is None:
+            _os.environ.pop("IMA_NOTE_INDEX", None)
+        else:
+            _os.environ["IMA_NOTE_INDEX"] = old
+
+
+@case("create --dedup 命中账本时跳过创建（索引延迟下也生效）")
+def _():
+    import contextlib
+    import io as _io
+    import os as _os
+
+    ledger = _os.path.join(tempfile.mkdtemp(), "idx.json")
+    Path(ledger).write_text('{"标题F": "n5"}', encoding="utf-8")
+    old = _os.environ.get("IMA_NOTE_INDEX")
+    _os.environ["IMA_NOTE_INDEX"] = ledger
+    try:
+        u = FakeUploader()
+
+        def fake_request(path, body, timeout=30):
+            u.calls.append({"path": path, "body": body})
+            if path.endswith("search_note"):
+                return {"code": 0, "data": {"search_note_infos": []}}   # 模拟索引还没跟上
+            if path.endswith("get_doc_content"):
+                return {"code": 0, "data": {"content": "x"}}
+            return {"code": 0, "data": {}}
+
+        u._request = fake_request
+        args = type("A", (), {"title": "标题F", "content": "正文", "file": None,
+                              "transform_images": False, "dry_run": False,
+                              "json": True, "dedup": True, "log_file": None})()
+        buf = _io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                m._cmd_create(u, args)
+        except SystemExit as e:
+            expect(e.code == 2, f"dedup 命中应 exit(2)，实际 {e.code}")
+        else:
+            raise AssertionError("dedup 未命中账本，仍去创建了")
+        expect(not [c for c in u.calls if c["path"].endswith("import_doc")],
+               "dedup 命中后不应调 import_doc")
+    finally:
+        if old is None:
+            _os.environ.pop("IMA_NOTE_INDEX", None)
+        else:
+            _os.environ["IMA_NOTE_INDEX"] = old
+
+
 def main():
     print("=" * 62)
     print("  ima_upload 请求契约测试（不发起真实请求）")
