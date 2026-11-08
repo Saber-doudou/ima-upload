@@ -1,6 +1,6 @@
 {
-  "version": "3.5.1",
+  "version": "3.5.2",
   "publishedAt": 1792982218000,
   "readmeNoteId": null,
-  "changelog": "v3.5.1: 补齐 v3.5.0 留下的缺口——ps1 错误路径测不到。①新增统一退出出口 Stop-Script：生产仍 exit，测试模式（-NoExit）改为 throw，10 处 exit 1 全部收敛；②5 处缺参分支统一走 Fail-Argument，-Json 时输出 {\"error\":true,\"msg\":...} 再退出，非 JSON 模式保持原 Write-Error 行为；③新增 7 项错误路径断言（业务错误输 error、以退出码 1 结束、不写 note_id 日志防假成功、缺参不发请求），ps1 测试 20→27 全绿。真实调用回归通过（search 返回 10462 字符 JSON 合法，缺参仍以退出码 1 终止且现在返回 JSON）。-NoExit 为测试专用，文档已注明勿在生产使用"
+  "changelog": "v3.5.2: 清掉 v3.4.9 之后遗留的 5 条账本边界。①记账/失效/查询三处统一过 _clean_title，修标题带首尾空格时账本 miss 退化成新建；②_forget_note 改为按 note_id 反查删除全部别名，修同一笔记在多个键名下残留死 ID；③_lookup_ledger 只接受非空字符串，修手工改坏成数字时被塞进请求体；④create --dedup 账本命中即判定已存在，不再多打一次 search_note；⑤文档把「空内容判失效」的副作用从「结果仍正确」改成条件说明（纯标题笔记会多一次搜索，极低概率在索引未跟上前新建），并补双键合并语义（CLI title 为主键，同 title 不同 content 标题会合并到同一条）。契约测试 86→89，四条新用例均用 git stash 验过红态"
 }

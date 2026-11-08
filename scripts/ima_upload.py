@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-IMA上传工具 - Python封装版本 v3.5.1
+IMA上传工具 - Python封装版本 v3.5.2
 
 功能概览：
   笔记模块：create / upsert / append / search / list / read / image-url
@@ -307,8 +307,10 @@ def _remember_note(note_id, *titles):
     为什么存两个键：CLI title 是**稳定**的（同一次任务不会变），content 标题会随内容变化。
     只存 content 标题的话，第二次 upsert 换成不带标题行的纯文本就会 miss。
     只存 CLI title 的话，别处按 content 标题来 upsert 时会 miss。两个都存最稳。
+
+    键统一过 `_clean_title`：标题带首尾空格或内部换行时，不归一会和查询侧对不上而白 miss。
     """
-    keys = [t for t in titles if t]
+    keys = [k for k in (_clean_title(t) for t in titles if t) if k]
     if not note_id or not keys:
         return
     index = _load_note_index()
@@ -317,15 +319,22 @@ def _remember_note(note_id, *titles):
     _save_note_index(index)
 
 
-def _forget_notes(*titles):
-    """条目失效时真正从文件里删掉，避免残留在后续查询里反复命中。"""
-    keys = [t for t in titles if t]
-    if not keys:
-        return
+def _forget_note(note_id=None, *titles):
+    """
+    条目失效时真正从文件里删掉。
+
+    两路都删：按 note_id 反查所有别名（同一篇笔记可能记在多个键名下），
+    以及显式给出的标题。只删当前两个键会留下别名残骸，下次换个标题查又会命中死 ID。
+    """
     index = _load_note_index()
     changed = False
-    for k in keys:
-        if k in index:
+    if note_id:
+        for k in [k for k, v in index.items() if v == note_id]:
+            del index[k]
+            changed = True
+    for t in titles:
+        k = _clean_title(t)
+        if k and k in index:
             del index[k]
             changed = True
     if changed:
@@ -333,9 +342,18 @@ def _forget_notes(*titles):
 
 
 def _lookup_ledger(title, content):
-    """按 CLI title 与 content 标题两个键查账本，返回 note_id 或 None。"""
+    """
+    按 CLI title 与 content 标题两个键查账本，返回 note_id 或 None。
+    值必须是字符串：手工改坏成数字/对象时忽略，避免把非字符串塞进请求体。
+    """
     index = _load_note_index()
-    return index.get(title) or index.get(_effective_title(title, content))
+    for k in (_clean_title(title), _clean_title(_effective_title(title, content))):
+        if not k:
+            continue
+        v = index.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return None
 
 
 def _clean_title(title):
@@ -850,7 +868,7 @@ class IMAUploader:
             # 注意：无效 note_id 时服务端返回 code=0 + 空内容（见 _cmd_read 的注释），
             # 不抛异常。只看异常会漏判，必须同时把「空内容」视为失效。
             if not (body or "").strip():
-                _forget_notes(title, lookup_title)
+                _forget_note(cached, title, lookup_title)
                 cached = None
         if cached:
             self.append_note(cached, content, transform_images=transform_images)
@@ -1419,7 +1437,7 @@ class IMAError(Exception):
 
 def _build_parser():
     parser = argparse.ArgumentParser(
-        description="IMA笔记上传工具 v3.5.1（笔记+知识库）",
+        description="IMA笔记上传工具 v3.5.2（笔记+知识库）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 笔记操作：
@@ -1655,11 +1673,13 @@ def _cmd_create(uploader, args):
             except Exception:
                 body = ""
             if not (body or "").strip():
-                _forget_notes(args.title, effective)
+                _forget_note(cached, args.title, effective)
                 cached = None
-        existing = uploader.find_exact_title(effective)
-        if not existing and cached:
+        # 账本命中即可判定"已存在"，不必再打一次搜索——那正是账本要绕开的索引延迟
+        if cached:
             existing = [{"note_id": cached, "title": effective}]
+        else:
+            existing = uploader.find_exact_title(effective)
         if existing:
             if args.json:
                 print(json.dumps({

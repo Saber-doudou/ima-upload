@@ -16,6 +16,7 @@ ima_upload 请求契约测试
 
 import sys
 import os
+import json
 import tempfile
 import urllib.parse
 from pathlib import Path
@@ -1746,6 +1747,92 @@ def _():
             raise AssertionError("dedup 未命中账本，仍去创建了")
         expect(not [c for c in u.calls if c["path"].endswith("import_doc")],
                "dedup 命中后不应调 import_doc")
+        expect(not [c for c in u.calls if c["path"].endswith("search_note")],
+               "dedup 命中账本后不应再打一次搜索")
+    finally:
+        if old is None:
+            _os.environ.pop("IMA_NOTE_INDEX", None)
+        else:
+            _os.environ["IMA_NOTE_INDEX"] = old
+
+
+@case("账本键归一化：标题带首尾空格仍能命中")
+def _():
+    u = FakeUploader()
+    server_title = {}
+
+    def fake_request(path, body, timeout=30):
+        u.calls.append({"path": path, "body": body})
+        if path.endswith("search_note"):
+            t = server_title.get("title")
+            items = [{"note_book_info": {"note_id": "n1", "title": t}}] if t else []
+            return {"code": 0, "data": {"search_note_infos": items}}
+        if path.endswith("get_doc_content"):
+            return {"code": 0, "data": {"content": "x"}}
+        if path.endswith("import_doc"):
+            server_title["title"] = body["content"].split("\n", 1)[0].lstrip("# ").strip()
+            return {"code": 0, "data": {"note_id": "n1"}}
+        return {"code": 0, "data": {}}
+
+    u._request = fake_request
+    u.upsert_note(" 标题S ", "# 标题T\n\n正文")
+    r2 = u.upsert_note("标题S", "追加内容")
+    expect(r2["action"] == "appended",
+           f"标题带空格时账本未归一化，退化成新建: {r2['action']}")
+
+
+@case("账本失效时按 note_id 清掉全部别名")
+def _():
+    import os as _os
+    ledger = _os.path.join(tempfile.mkdtemp(), "idx.json")
+    Path(ledger).write_text('{"标题U": "DEAD", "别名U": "DEAD"}', encoding="utf-8")
+    old = _os.environ.get("IMA_NOTE_INDEX")
+    _os.environ["IMA_NOTE_INDEX"] = ledger
+    try:
+        u = FakeUploader()
+
+        def fake_request(path, body, timeout=30):
+            u.calls.append({"path": path, "body": body})
+            if path.endswith("get_doc_content"):
+                return {"code": 0, "data": {"content": ""}}
+            if path.endswith("import_doc"):
+                return {"code": 0, "data": {"note_id": "n7"}}
+            return {"code": 0, "data": {}}
+
+        u._request = fake_request
+        u.upsert_note("标题U", "正文")
+        after = json.loads(Path(ledger).read_text(encoding="utf-8"))
+        expect("别名U" not in after,
+               f"失效后别名键残留，下次换标题查仍会命中死 ID: {list(after)}")
+        expect("DEAD" not in after.values(), f"死 ID 仍有残留: {after}")
+    finally:
+        if old is None:
+            _os.environ.pop("IMA_NOTE_INDEX", None)
+        else:
+            _os.environ["IMA_NOTE_INDEX"] = old
+
+
+@case("账本 value 非字符串时忽略，不塞进请求体")
+def _():
+    import os as _os
+    ledger = _os.path.join(tempfile.mkdtemp(), "idx.json")
+    Path(ledger).write_text('{"标题V": 123}', encoding="utf-8")
+    old = _os.environ.get("IMA_NOTE_INDEX")
+    _os.environ["IMA_NOTE_INDEX"] = ledger
+    try:
+        u = FakeUploader()
+
+        def fake_request(path, body, timeout=30):
+            u.calls.append({"path": path, "body": body})
+            if path.endswith("import_doc"):
+                return {"code": 0, "data": {"note_id": "n8"}}
+            return {"code": 0, "data": {}}
+
+        u._request = fake_request
+        r = u.upsert_note("标题V", "正文")
+        expect(r["action"] == "created", f"坏值应被忽略并新建: {r['action']}")
+        expect(not [c for c in u.calls if c["path"].endswith("get_doc_content")],
+               "非字符串的账本值不应被拿去校验（会带着数字打请求）")
     finally:
         if old is None:
             _os.environ.pop("IMA_NOTE_INDEX", None)

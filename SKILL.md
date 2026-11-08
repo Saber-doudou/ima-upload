@@ -11,7 +11,7 @@ description: "IMA（腾讯 ima）云端笔记与知识库的本地直连上传�
   不适用：只需要把本地图片转成外链再嵌入时用官方 ima-skills（需云代理会话）；普通对话记忆整理用 memory-consolidate。"
 ---
 
-# IMA 笔记上传 Skill v3.5.1
+# IMA 笔记上传 Skill v3.5.2
 
 腾讯 IMA 云端笔记 + 知识库管理工具。整合官方 ima-skill 知识库模块，保留本地独有优势。
 
@@ -188,7 +188,7 @@ python scripts/check_official_skill.py --official-dir PATH  # 指定官方包目
 写操作的正确性用 mock 验证，不产生真实数据：
 
 ```bash
-python scripts/test_contract.py        # 86 项契约检查（Python 侧）
+python scripts/test_contract.py        # 89 项契约检查（Python 侧）
 python scripts/test_contract.py -v     # 附失败明细
 ```
 
@@ -225,14 +225,14 @@ dry-run、换链请求体与 session 降级）、空批防御、`EXT_MAP`/`SIZE_
 | `/tmp/` 路径报"文件不存在" | Git Bash `/tmp/` Python 不识别 | 用 `realpath /tmp/x.md` 获取 Windows 路径 |
 | 重复创建同名笔记 | `create` 无去重 | 用 **`upsert`**（同名追加）或 `create --dedup` |
 | ~~**`create` 多行内容标题被覆盖**~~ | 早期版本正文不带标题行，首行会被服务端当成标题 | **v3.4.5 起已不成立**：`create` 会自动在首行写 `# {title}`，标题不再取自正文。长内容仍建议用 `--file`，那只是为了避免 shell 引号转义麻烦 |
-| **账本条目失效靠"空内容"判定** | 无效 note_id 时 `get_doc_content` 返回 `code=0 + 空内容`、不抛异常；只 catch 异常会漏判 | 已按「异常或空内容」双重判定，失效时真正从账本删条目并回落搜索。**副作用**：正文本来就只有标题的笔记也会被判失效，多一次搜索（结果仍正确） |
+| **账本条目失效靠"空内容"判定** | 无效 note_id 时 `get_doc_content` 返回 `code=0 + 空内容`、不抛异常；只 catch 异常会漏判 | 已按「异常或空内容」双重判定，失效时**按 note_id 反查删掉全部别名**再回落搜索。**边界**：正文只有标题的合法笔记也会被判失效，会多一次搜索；若该笔记刚建、搜索索引尚未跟上，理论上可能被当成不存在而新建——概率极低，遇到后删账本文件即可恢复 |
 | **知识库列表全为 null** | `search_knowledge_base` 实测返回 `kb_id`/`kb_name`，官方 api.md 却写 `id`/`name` | 已由 `_normalize_kb` 双字段兼容；**新接口以实测为准，不要只信文档** |
 | **`search` 结果数不可用于统计** | 服务端返回不全：搜「备份」只回 143 篇，`list --nb` 遍历实际超 248 篇 | 统计一律用 `list --nb` 遍历；`search` 只用于定位单条 |
 | **`list --nb --limit` 超过 20 返回空** | `list_note` 单页上限 20，超过静默返回空且 code=0 | 已由 `list_notes` 按偏移量自动翻页；`cursor` 是偏移量不是游标 |
 | **给原文链接追加下载参数变 403** | `url_info.url` 是带 `sign` 的预签名链接，查询串含 `media_title`/`response-content-type`，追加任何参数都破坏签名 | 签名 URL 原样用；文件名从 `media_title` 取；仅未签名 URL 才追加官方 disposition 约定 |
 | **插图写相对路径被拒** | `![](images/a.png)` 报「不支持的图片来源」：只认 `file://`、`/` 开头、`盘符:\` 三种（官方 `localPath()` 同规则，非本地限制） | 改绝对路径 `![](C:/pics/a.png)` 或 `![](file:///C:/pics/a.png)`；Windows 下 `file:///C:/x` 的前导斜杠本地已修正，官方仍有该缺陷 |
 | **小内容报错不自动降级** | 降级条件是切分后 ≥2 批（`len(fallback) > 1`），单批内容遇到 content 类报错直接抛出 | 内容本身就小，拆无可拆；按报错文案调整后重试，或去掉 `--transform-images` 走普通 `create` |
-| **连续 upsert 同一标题曾重复建笔记** | `search_note` 索引有秒级到十几秒延迟，「先查后建」是经典竞态（v3.4.9 前必现） | 已由本地账本兜底：按 **CLI title 与 content 标题双键**记账（content 一变不会 miss），命中先校验再追加。**边界**：①不跨设备同步；②多进程同时 upsert 无锁，仍可能重复；③标题明文落盘、无容量上限；④账本写失败会静默退回靠搜索，不报错。删文件即回到仅靠搜索 |
+| **连续 upsert 同一标题曾重复建笔记** | `search_note` 索引有秒级到十几秒延迟，「先查后建」是经典竞态（v3.4.9 前必现） | 已由本地账本兜底：按 **CLI title 与 content 标题双键**记账（content 一变不会 miss），命中先校验再追加。**语义注意**：CLI title 是主键，同一个 title 配不同的 content 标题会合并到同一条笔记（追加的是新正文，标题不变）。**边界**：①不跨设备同步；②多进程同时 upsert 无锁，仍可能重复；③标题明文落盘、无容量上限；④账本写失败会静默退回靠搜索，不报错。删文件即回到仅靠搜索 |
 
 ---
 
