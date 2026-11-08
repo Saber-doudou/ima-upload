@@ -2,6 +2,33 @@
 
 本文件记录 ima-upload 技能的版本变更。版本号遵循三段式（MAJOR.MINOR.PATCH），每段不超过一位数。
 
+## v3.5.0 — 2026-11-08
+
+给 `ps1` 补自动契约测试。此前它是 328 行、零自动回归保护的影子实现，本轮四次手工实跑才发现的问题（中文乱码、`-Type` 无效、标题没写、JSON 非法）全靠人肉。
+
+### 新增测试基建
+
+- **`ima_upload.ps1` 加两个测试注入点**：`-MockFile`（`{endpoint: response}` 预设响应，命中即返回、不发请求）、`-CaptureFile`（把每次请求的 `endpoint`/`body`/`headers` 写成 JSON Lines 供断言）。生产调用不传这两个参数，行为零变化。
+- **新增 `scripts/test_ps1.ps1`**：20 项断言，覆盖 create 的标题写入与「不传 `title` 字段」、content 自带标题不重复加、`-Type content` 用 `query_info.content`（原来错用 `title`）、`append` 不加标题行、`ima-openapi-ctx` 头格式、中文与 JSON 输出完整性。
+
+### 为什么不能并入 `test_contract.py`
+
+`ps1` 是另一个运行时，Python 的 `FakeUploader` 拦不到它的网络调用；本机沙箱也禁止从 Python/Bash 启动 PowerShell（安全策略拦截，未绕过）。因此 ps1 测试只能在其自身运行时内完成，由 `test_ps1.ps1` 独立执行，入口写在 SKILL.md 与 README。
+
+### 验证方式
+
+- 全绿：**20/20 通过**，不联网、不写真实 IMA 数据。
+- **变异测试**：在临时副本上故意改坏两处（去掉标题前置、把 `query_info.content` 改回 `title`），用例精准抓出 4 项失败（16/20），证明断言不是恒通过。
+
+### 版本
+
+按三段式「每段一位数、满十进位」，v3.4.9 之后升 **v3.5.0**，不写 v3.4.10。
+
+### 已知边界
+
+- ps1 的错误路径（业务错误 → `exit 1`）无法纳入测试：`exit` 会终止宿主会话，捕获不到后续断言。当前只覆盖成功路径与请求结构。
+- `-CaptureFile` 会在 `-MockFile` 生效前记录，所以它能断言 header；但 `ctx` 头的值在 scriptblock 模式下取不到 `$PSScriptRoot`，会退化为 `skill_version=unknown`，用例只断言格式不断言具体版本号。
+
 ## v3.4.9 — 2026-11-08
 
 修 v3.4.8 账本的两个缺陷。**v3.4.8 的 CHANGELOG 把「失效即回落」写成了已实现，与当时代码不符，本条一并更正。** 契约测试 83 → 86 项。

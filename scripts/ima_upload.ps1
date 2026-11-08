@@ -34,7 +34,12 @@ param(
     [ValidateSet("title", "content")]
     [string]$Type = "title",
     [switch]$Json,
-    [string]$Log
+    [string]$Log,
+    # 测试注入点：给定 JSON 文件（{endpoint: response}）时不发真实请求，直接返回其中的响应。
+    # 有它才能在没有网络、不碰真实 IMA 数据的前提下做自动回归——ps1 此前零自动测试。
+    [string]$MockFile,
+    # 配合 -MockFile：把每次请求的 endpoint 与 body 以 JSON Lines 追加写入，供测试断言请求体是否正确
+    [string]$CaptureFile
 )
 
 $ErrorActionPreference = "Stop"
@@ -105,6 +110,7 @@ function Invoke-IMAApi {
         [hashtable]$Body
     )
     $url = "$BaseUrl/$Endpoint"
+
     $headers = @{
         "Content-Type"          = "application/json; charset=utf-8"
         "ima-openapi-clientid" = $ClientId
@@ -112,6 +118,21 @@ function Invoke-IMAApi {
         # 与 Python 侧一致：官方每个请求都带 skill_version（ima_api.cjs:72）
         "ima-openapi-ctx"      = "skill_version=$SkillVersion"
     }
+
+    if ($CaptureFile) {
+        # 只记请求，不发网络。测试据此断言 body 结构与请求头。
+        $line = @{ endpoint = $Endpoint; body = $Body; headers = $headers } |
+            ConvertTo-Json -Compress -Depth 10
+        Add-Content -Path $CaptureFile -Value $line -Encoding UTF8
+    }
+    if ($MockFile) {
+        if (-not (Test-Path $MockFile)) { throw "MockFile 不存在: $MockFile" }
+        $mocks = Get-Content $MockFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        $resp = $mocks.$Endpoint
+        if ($null -eq $resp) { throw "MockFile 中没有 endpoint 的预设响应: $Endpoint" }
+        return $resp
+    }
+
     $utf8Bytes = [System.Text.Encoding]::UTF8.GetBytes(($Body | ConvertTo-Json -Depth 10))
     try {
         # 用 Invoke-WebRequest 取原始字节后自己按 UTF-8 解码。

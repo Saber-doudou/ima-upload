@@ -11,7 +11,7 @@ description: "IMA（腾讯 ima）云端笔记与知识库的本地直连上传�
   不适用：只需要把本地图片转成外链再嵌入时用官方 ima-skills（需云代理会话）；普通对话记忆整理用 memory-consolidate。"
 ---
 
-# IMA 笔记上传 Skill v3.4.9
+# IMA 笔记上传 Skill v3.5.0
 
 腾讯 IMA 云端笔记 + 知识库管理工具。整合官方 ima-skill 知识库模块，保留本地独有优势。
 
@@ -188,16 +188,30 @@ python scripts/check_official_skill.py --official-dir PATH  # 指定官方包目
 写操作的正确性用 mock 验证，不产生真实数据：
 
 ```bash
-python scripts/test_contract.py        # 86 项契约检查
+python scripts/test_contract.py        # 86 项契约检查（Python 侧）
 python scripts/test_contract.py -v     # 附失败明细
 ```
+
+`ps1` 是另一套运行时，Python 的 mock 拦不到它的网络调用，需单独跑：
+
+```powershell
+# 允许执行脚本时
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test_ps1.ps1
+# 被执行策略拦住时（沙箱常见）
+$sb = [scriptblock]::Create([IO.File]::ReadAllText(".\scripts\test_ps1.ps1"))
+& $sb -ScriptDir "<ima-upload>\scripts"
+```
+
+ps1 测试靠脚本自带的 `-MockFile` / `-CaptureFile` 注入点：前者给预设响应、后者把每次请求的 body 与 header 落成 JSON Lines 供断言，全程不联网。
+覆盖 create 的标题写入与「不传 title 字段」、content 自带标题不重复加、`-Type content` 用 `query_info.content`、`append` 不加标题行、`ima-openapi-ctx` 头、中文与 JSON 输出完整性。
 
 覆盖：每个方法请求路径与 body 字段是否符合官方定义、响应解析能否处理真实字段名、
 重名与视频类型拦截（含视频 MIME 黑名单）、图片签名校验（伪造扩展名/坏魔数）、HTML/EPUB 超限拦截、
 上传安全门（COS 失败不调 add_knowledge、title 恒等、keep-copy 时间戳副本且改名后复查重名、
 序号棘轮重试与试尽拒绝）、原文落盘（签名 URL 透传、强制下载参数、重名后缀、路径穿越防护、
 Windows 保留设备名改写）、插图转存（3MiB 限制、data URL、体积降级与写入报错降级、业务错误不降级、
-dry-run、换链请求体与 session 降级）、空批防御、`EXT_MAP`/`SIZE_LIMITS` 与官方枚举一致性。
+dry-run、换链请求体与 session 降级）、空批防御、`EXT_MAP`/`SIZE_LIMITS` 与官方枚举一致性、
+`upsert` 本地账本（双键命中、失效回落、`--dedup` 复用）。
 
 ---
 

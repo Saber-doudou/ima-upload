@@ -1,6 +1,6 @@
 # ima-upload Skill
 
-腾讯 IMA 云端笔记与知识库上传工具（公开脱敏版）。当前版本 **v3.4.9**。
+腾讯 IMA 云端笔记与知识库上传工具（公开脱敏版）。当前版本 **v3.5.0**。
 
 ## 特性
 
@@ -20,8 +20,14 @@
 ## 自检
 
 ```bash
-python scripts/test_contract.py      # 86 项契约测试，不发真实请求
+python scripts/test_contract.py      # 86 项契约测试（Python 侧），不发真实请求
 python scripts/check_official_skill.py --brief   # 与官方 ima-skills 的端点和能力差异
+```
+
+`ps1` 是独立运行时，另有一套测试（靠 `-MockFile` 注入，不联网）：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test_ps1.ps1
 ```
 
 ## 脱敏声明

@@ -1,6 +1,6 @@
 {
-  "version": "3.4.9",
+  "version": "3.5.0",
   "publishedAt": 1792982218000,
   "readmeNoteId": null,
-  "changelog": "v3.4.9: 修 v3.4.8 账本两个缺陷，并更正 v3.4.8 的过度承诺。①账本 key 原先绑在 content 首行标题上，content 一变（如第二次只追加纯文本）key 从 标题B 变成 标题A，miss 后重复建笔记——改为双键记账（CLI title 稳定键 + content 标题别名键）。②失效校验只看异常，而无效 note_id 返回 code=0+空内容不抛异常，导致直接往死 ID 追加、且不删账本条目——改为异常或空内容都判失效、真正删条目、回落搜索。③create --dedup 未接账本也没用 _effective_title，已统一。契约测试 83→86，三条新用例均用 git stash 验过红态；实跑不同 content 连发只建一条。文档补账本真实边界（多进程无锁、明文落盘、无上限、写失败静默），清理真实账本残条目"
+  "changelog": "v3.5.0: 给 ps1 补自动契约测试。此前 328 行零自动回归保护，四次手工实跑才发现的问题全靠人肉。①ima_upload.ps1 加 -MockFile（预设响应，命中即返回不发请求）与 -CaptureFile（把 endpoint/body/headers 写成 JSON Lines），不传即行为不变；②新增 scripts/test_ps1.ps1，20 项断言覆盖 create 标题写入与不传 title 字段、content 自带标题不重复加、-Type content 用 query_info.content、append 不加标题行、ctx 头、中文与 JSON 输出；③变异测试验证有效（临时副本上故意改坏两处，抓出 4 项失败 16/20）；④全绿 20/20，不联网不写真实数据。因沙箱禁止从 Python/Bash 启动 ps1 宿主，无法并入 test_contract.py，独立运行。版本按三段式升 v3.5.0 而非 v3.4.10"
 }
