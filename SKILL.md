@@ -11,7 +11,7 @@ description: "IMA（腾讯 ima）云端笔记与知识库的本地直连上传�
   不适用：只需要把本地图片转成外链再嵌入时用官方 ima-skills（需云代理会话）；普通对话记忆整理用 memory-consolidate。"
 ---
 
-# IMA 笔记上传 Skill v3.5.0
+# IMA 笔记上传 Skill v3.5.1
 
 腾讯 IMA 云端笔记 + 知识库管理工具。整合官方 ima-skill 知识库模块，保留本地独有优势。
 
@@ -202,7 +202,7 @@ $sb = [scriptblock]::Create([IO.File]::ReadAllText(".\scripts\test_ps1.ps1"))
 & $sb -ScriptDir "<ima-upload>\scripts"
 ```
 
-ps1 测试靠脚本自带的 `-MockFile` / `-CaptureFile` 注入点：前者给预设响应、后者把每次请求的 body 与 header 落成 JSON Lines 供断言，全程不联网。
+ps1 测试靠脚本自带的 `-MockFile` / `-CaptureFile` / `-NoExit` 三个注入点：前者给预设响应、中者把每次请求的 body 与 header 落成 JSON Lines 供断言、后者把 `exit` 换成可捕获异常（否则 `exit` 会杀掉宿主会话，拿不到退出前的输出）。**三者都是测试专用，生产调用不要传**。
 覆盖 create 的标题写入与「不传 title 字段」、content 自带标题不重复加、`-Type content` 用 `query_info.content`、`append` 不加标题行、`ima-openapi-ctx` 头、中文与 JSON 输出完整性。
 
 覆盖：每个方法请求路径与 body 字段是否符合官方定义、响应解析能否处理真实字段名、

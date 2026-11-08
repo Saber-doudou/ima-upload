@@ -144,6 +144,41 @@ try {
     Check ($text -like '*"note_id"*') "输出是可解析的 JSON 文本"
 } finally { Remove-Item $fx.Dir -Recurse -Force }
 
+# 8. create 业务错误：输出 error JSON、以退出码 1 结束、不写 note_id 日志
+$fx = New-Fixture @{ import_doc = @{ code = 100005; msg = "no permission" } }
+try {
+    $logPath = Join-Path $fx.Dir "log.jsonl"
+    $out = try {
+        & $sb create "标题X" "正文" -Json -MockFile $fx.Mock -CaptureFile $fx.Capture -Log $logPath -NoExit
+    } catch { "CAUGHT:" + $_.Exception.Message }
+    $text = ($out | Out-String)
+    Check ($text -like '*"error"*') "业务错误输出 error 字段" ("out=" + $text)
+    Check ($text -like "*CAUGHT:EXIT:1*") "业务错误以退出码 1 结束" ("out=" + $text)
+    Check (-not (Test-Path $logPath)) "业务错误不写 note_id 日志（防假成功）"
+} finally { Remove-Item $fx.Dir -Recurse -Force }
+
+# 9. append 缺 note_id：不发请求，直接退出
+$fx = New-Fixture @{}
+try {
+    $out = try {
+        & $sb append -Json -MockFile $fx.Mock -CaptureFile $fx.Capture -NoExit
+    } catch { "CAUGHT:" + $_.Exception.Message }
+    $text = ($out | Out-String)
+    Check ($text -like "*CAUGHT:EXIT:1*") "append 缺参以退出码 1 结束" ("out=" + $text)
+    Check ((Get-Captured $fx.Capture).Count -eq 0) "append 缺参不发请求"
+} finally { Remove-Item $fx.Dir -Recurse -Force }
+
+# 10. search 业务错误：同样以退出码 1 结束
+$fx = New-Fixture @{ search_note = @{ code = 400; msg = "bad request" } }
+try {
+    $out = try {
+        & $sb search "关键词" -Json -MockFile $fx.Mock -CaptureFile $fx.Capture -NoExit
+    } catch { "CAUGHT:" + $_.Exception.Message }
+    $text = ($out | Out-String)
+    Check ($text -like "*CAUGHT:EXIT:1*") "search 业务错误以退出码 1 结束" ("out=" + $text)
+    Check ((Get-Captured $fx.Capture).Count -eq 1) "search 已发出 1 次请求"
+} finally { Remove-Item $fx.Dir -Recurse -Force }
+
 # ---------------- 汇总 ----------------
 Write-Output ""
 $total = $script:Pass + $script:Fail

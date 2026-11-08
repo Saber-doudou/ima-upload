@@ -1,6 +1,6 @@
 {
-  "version": "3.5.0",
+  "version": "3.5.1",
   "publishedAt": 1792982218000,
   "readmeNoteId": null,
-  "changelog": "v3.5.0: 给 ps1 补自动契约测试。此前 328 行零自动回归保护，四次手工实跑才发现的问题全靠人肉。①ima_upload.ps1 加 -MockFile（预设响应，命中即返回不发请求）与 -CaptureFile（把 endpoint/body/headers 写成 JSON Lines），不传即行为不变；②新增 scripts/test_ps1.ps1，20 项断言覆盖 create 标题写入与不传 title 字段、content 自带标题不重复加、-Type content 用 query_info.content、append 不加标题行、ctx 头、中文与 JSON 输出；③变异测试验证有效（临时副本上故意改坏两处，抓出 4 项失败 16/20）；④全绿 20/20，不联网不写真实数据。因沙箱禁止从 Python/Bash 启动 ps1 宿主，无法并入 test_contract.py，独立运行。版本按三段式升 v3.5.0 而非 v3.4.10"
+  "changelog": "v3.5.1: 补齐 v3.5.0 留下的缺口——ps1 错误路径测不到。①新增统一退出出口 Stop-Script：生产仍 exit，测试模式（-NoExit）改为 throw，10 处 exit 1 全部收敛；②5 处缺参分支统一走 Fail-Argument，-Json 时输出 {\"error\":true,\"msg\":...} 再退出，非 JSON 模式保持原 Write-Error 行为；③新增 7 项错误路径断言（业务错误输 error、以退出码 1 结束、不写 note_id 日志防假成功、缺参不发请求），ps1 测试 20→27 全绿。真实调用回归通过（search 返回 10462 字符 JSON 合法，缺参仍以退出码 1 终止且现在返回 JSON）。-NoExit 为测试专用，文档已注明勿在生产使用"
 }

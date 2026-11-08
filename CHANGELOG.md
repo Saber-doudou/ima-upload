@@ -2,6 +2,33 @@
 
 本文件记录 ima-upload 技能的版本变更。版本号遵循三段式（MAJOR.MINOR.PATCH），每段不超过一位数。
 
+## v3.5.1 — 2026-11-08
+
+补齐 v3.5.0 明确留下的缺口：ps1 错误路径无法测试。ps1 测试 20 → 27 项。
+
+### 修复
+
+- **`exit` 会杀死宿主会话，错误路径测不到**：新增统一退出出口 `Stop-Script`——生产模式仍 `exit $Code`，测试模式（`-NoExit`）改为 `throw "EXIT:<code>"`。10 处 `exit 1` 全部收敛到该出口。
+- **`-Json` 下缺参只吐纯文本**：5 处缺参分支（create 标题/内容、append note_id/内容、search 关键词）统一走 `Fail-Argument`，`-Json` 时输出 `{"error":true,"msg":...}` 再退出，机器可读；非 JSON 模式保持原 `Write-Error` 行为不变。
+
+### 新增用例（7 项）
+
+| 用例 | 断言 |
+|---|---|
+| create 业务错误 | 输出含 `error` 字段、以退出码 1 结束、**不写 note_id 日志**（防"假成功"） |
+| append 缺 note_id | 以退出码 1 结束、**不发任何请求** |
+| search 业务错误 | 以退出码 1 结束、已发出 1 次请求 |
+
+### 验证
+
+- ps1 测试 **27/27 通过**，仍不联网、不写真实数据。
+- 生产行为回归：真实 `search` 返回 10462 字符、JSON 合法；缺参路径实测仍以退出码 1 终止，且现在返回 JSON 而非纯文本。
+- 语法解析 0 错误。
+
+### 遗留
+
+`-NoExit` 是测试专用开关，文档已注明不要在生产调用中使用（传了会把退出码变成异常，shell 里表现为错误堆栈）。
+
 ## v3.5.0 — 2026-11-08
 
 给 `ps1` 补自动契约测试。此前它是 328 行、零自动回归保护的影子实现，本轮四次手工实跑才发现的问题（中文乱码、`-Type` 无效、标题没写、JSON 非法）全靠人肉。
@@ -9,7 +36,7 @@
 ### 新增测试基建
 
 - **`ima_upload.ps1` 加两个测试注入点**：`-MockFile`（`{endpoint: response}` 预设响应，命中即返回、不发请求）、`-CaptureFile`（把每次请求的 `endpoint`/`body`/`headers` 写成 JSON Lines 供断言）。生产调用不传这两个参数，行为零变化。
-- **新增 `scripts/test_ps1.ps1`**：20 项断言，覆盖 create 的标题写入与「不传 `title` 字段」、content 自带标题不重复加、`-Type content` 用 `query_info.content`（原来错用 `title`）、`append` 不加标题行、`ima-openapi-ctx` 头格式、中文与 JSON 输出完整性。
+- **新增 `scripts/test_ps1.ps1`**：20 项断言（v3.5.1 扩到 27 项），覆盖 create 的标题写入与「不传 `title` 字段」、content 自带标题不重复加、`-Type content` 用 `query_info.content`（原来错用 `title`）、`append` 不加标题行、`ima-openapi-ctx` 头格式、中文与 JSON 输出完整性。
 
 ### 为什么不能并入 `test_contract.py`
 

@@ -39,7 +39,10 @@ param(
     # 有它才能在没有网络、不碰真实 IMA 数据的前提下做自动回归——ps1 此前零自动测试。
     [string]$MockFile,
     # 配合 -MockFile：把每次请求的 endpoint 与 body 以 JSON Lines 追加写入，供测试断言请求体是否正确
-    [string]$CaptureFile
+    [string]$CaptureFile,
+    # 测试专用：把 exit 换成可捕获异常。exit 会直接终止宿主会话，用例拿不到退出前的输出、
+    # 也无法断言退出码。生产调用不传，行为不变。
+    [switch]$NoExit
 )
 
 $ErrorActionPreference = "Stop"
@@ -64,6 +67,24 @@ try {
 # 统一控制台输出编码。PS5.1 默认按 GBK 编码输出，中文 JSON 会乱码；
 # 设成 UTF-8 后可直接 Write-Output 字符串，不必再手工转字节数组。
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+
+function Fail-Argument {
+    # 缺参统一出口：-Json 模式必须给机器可读的 JSON，不能只吐纯文本
+    param([string]$Msg)
+    if ($Json) {
+        Write-JsonError -Msg $Msg
+        Stop-Script 1
+    }
+    Write-Error $Msg
+    Stop-Script 1
+}
+
+function Stop-Script {
+    # 统一退出出口。测试模式（-NoExit）下抛异常，让用例能捕获退出前的输出并断言退出码。
+    param([int]$Code = 1)
+    if ($NoExit) { throw "EXIT:$Code" }
+    exit $Code
+}
 
 function Write-JsonError {
     # 用 ConvertTo-Json 生成，避免把含引号/换行的文本直接插进 JSON 字面量（会产出非法 JSON）
@@ -98,7 +119,7 @@ if (-not $ClientId -or -not $ApiKey) {
     } else {
         Write-Error $msg
     }
-    exit 1
+    Stop-Script 1
 }
 
 # ===== API 调用 =====
@@ -174,7 +195,7 @@ function Read-FileContent {
         } else {
             Write-Error "文件不存在: $Path"
         }
-        exit 1
+        Stop-Script 1
     }
     # UTF8Encoding(throwOnInvalidBytes=$true)：非法字节必须抛异常才能落到 GBK 兜底。
     # 原写法用 [Encoding]::UTF8，它把非法序列替换成 U+FFFD 而不抛异常，兜底分支永远不生效。
@@ -197,8 +218,8 @@ switch ($Command) {
 
     "create" {
         if (-not $Arg1) {
-            Write-Error "create 需要提供标题"
-            exit 1
+            Fail-Argument "create 需要提供标题"
+            Stop-Script 1
         }
         $title = $Arg1
         $content = $Arg2
@@ -207,8 +228,8 @@ switch ($Command) {
             $content = Read-FileContent $File
         }
         if (-not $content) {
-            Write-Error "create 需要提供内容（位置参数或 -File）"
-            exit 1
+            Fail-Argument "create 需要提供内容（位置参数或 -File）"
+            Stop-Script 1
         }
 
         # 只认「content 以 Markdown 一级标题开头」，与 Python 侧 _MD_HEADING_RE 的 ^ 语义一致。
@@ -230,7 +251,7 @@ switch ($Command) {
             } else {
                 Write-Error $msg
             }
-            exit 1
+            Stop-Script 1
         }
 
         $noteId = $resp.data.note_id
@@ -251,8 +272,8 @@ switch ($Command) {
 
     "append" {
         if (-not $Arg1) {
-            Write-Error "append 需要提供 note_id"
-            exit 1
+            Fail-Argument "append 需要提供 note_id"
+            Stop-Script 1
         }
         $noteId = $Arg1
         $content = $Arg2
@@ -261,8 +282,8 @@ switch ($Command) {
             $content = Read-FileContent $File
         }
         if (-not $content) {
-            Write-Error "append 需要提供内容（位置参数或 -File）"
-            exit 1
+            Fail-Argument "append 需要提供内容（位置参数或 -File）"
+            Stop-Script 1
         }
 
         $body = @{
@@ -278,7 +299,7 @@ switch ($Command) {
             } else {
                 Write-Error "[IMA Error $($resp.code)] $($resp.msg)"
             }
-            exit 1
+            Stop-Script 1
         }
 
         if ($Json) {
@@ -290,8 +311,8 @@ switch ($Command) {
 
     "search" {
         if (-not $Arg1) {
-            Write-Error "search 需要提供关键词"
-            exit 1
+            Fail-Argument "search 需要提供关键词"
+            Stop-Script 1
         }
         $keyword  = $Arg1
         # 官方 QueryInfo 有 title / content 两个字段，SearchType=1 是正文检索。
@@ -318,7 +339,7 @@ switch ($Command) {
             } else {
                 Write-Error "[IMA Error $($resp.code)] $($resp.msg)"
             }
-            exit 1
+            Stop-Script 1
         }
 
         $notes = $resp.data.search_note_infos
