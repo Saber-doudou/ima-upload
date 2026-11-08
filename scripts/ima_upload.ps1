@@ -397,7 +397,13 @@ switch ($Command) {
                 if ($MockFile) { $item["mock"] = $true }
                 $item
             }
-            Write-Output ($output | ConvertTo-Json -Depth 5)
+            # 零结果必须输出合法的 `[]`。PS 里空管道喂给 ConvertTo-Json 会一个字符都不输出，
+            # 消费方拿 `search -Json` 的结果去 ConvertFrom-Json / jq 会直接报解析错误。
+            if ($null -eq $output -or @($output).Count -eq 0) {
+                Write-Output "[]"
+            } else {
+                Write-Output ($output | ConvertTo-Json -Depth 5)
+            }
         } else {
             Write-MockNotice
             if ($notes.Count -eq 0) {

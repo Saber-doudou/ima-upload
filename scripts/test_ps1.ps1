@@ -189,6 +189,14 @@ try {
     Check ($o.note_id -eq "r1") "search 结果字段未被破坏"
 } finally { Remove-Item $fx.Dir -Recurse -Force }
 
+# 6g. mock 空结果输出空数组（无条目可标 mock，D 表已按此事实描述）
+$fx = New-Fixture @{ search_note = @{ code = 0; data = @{ search_note_infos = @() } } }
+try {
+    $out = & $sb search "关键词" -Json -MockFile $fx.Mock -CaptureFile $fx.Capture
+    $text = ($out | Out-String).Trim()
+    Check ($text -eq "[]") "空结果输出空数组" ("实际: " + $text)
+} finally { Remove-Item $fx.Dir -Recurse -Force }
+
 # 7. 中文与 JSON 输出不被破坏
 $fx = New-Fixture @{ import_doc = @{ code = 0; data = @{ note_id = "n7" } } }
 try {

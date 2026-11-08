@@ -1,6 +1,6 @@
 {
-  "version": "3.5.4",
+  "version": "3.5.5",
   "publishedAt": 1792982218000,
   "readmeNoteId": null,
-  "changelog": "v3.5.4: 补 v3.5.3 两处残留面。①mock 标记没覆盖 search（输出是对象数组，无法像 hashtable 那样附加字段），与 D 表「JSON 输出会带 mock:true」的承诺不符——改为 search 结果逐条带 mock:true。②-MockFile + -Log 的磁盘副作用没拦：Write-NoteIdLog 会把预设的假 note_id 写进真实映射文件，后续 append 指向不存在的笔记——改为 mock 模式跳过写日志。③Write-JsonError 也带 mock:true；④修正 capture 注释（单独传 -CaptureFile 时请求仍会真实发出，只有 -MockFile 才 return）；⑤删掉 SKILL.md 契约测试段里刚写死的「当前 32 项」。ps1 测试 32→35，两条新用例先对 v3.5.3 跑红（33/35，正是这两处），第三条为字段保护断言"
+  "changelog": "v3.5.5: 修 search -Json 零结果输出。审查以为空结果是 []，实跑是一个字符都没有——PS 里空管道喂给 ConvertTo-Json 不产出任何内容，导致零命中时返回的不是合法 JSON，消费方 ConvertFrom-Json / jq 直接解析失败。这条与 mock 无关，生产路径一直如此。改为零结果显式输出 []，单条/多条形状保持不变。文档：D 表与 pitfalls 把 mock:true 的承诺改为分层描述（create/append 对象上带，search 逐条带，空结果无条目可标）。ps1 测试 35→36，新增空结果断言先红后绿"
 }

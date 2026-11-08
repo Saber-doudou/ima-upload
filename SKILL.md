@@ -11,7 +11,7 @@ description: "IMA（腾讯 ima）云端笔记与知识库的本地直连上传�
   不适用：只需要把本地图片转成外链再嵌入时用官方 ima-skills（需云代理会话）；普通对话记忆整理用 memory-consolidate。"
 ---
 
-# IMA 笔记上传 Skill v3.5.4
+# IMA 笔记上传 Skill v3.5.5
 
 腾讯 IMA 云端笔记 + 知识库管理工具。整合官方 ima-skill 知识库模块，保留本地独有优势。
 
@@ -82,7 +82,7 @@ description: "IMA（腾讯 ima）云端笔记与知识库的本地直连上传�
 
 | 开关 | 作用 | 生产误传的后果 |
 |------|------|----------------|
-| `-MockFile` | 用预设响应替代真实请求，不联网 | **假成功**：打印「笔记创建成功 note_id: xxx」但一个字节都没写入 IMA。`create`/`append`/`search` 的 JSON 输出均带 `"mock":true`（search 为逐条带）；同时 `-Log` 会被跳过，不会把假 note_id 写进映射文件 |
+| `-MockFile` | 用预设响应替代真实请求，不联网 | **假成功**：打印「笔记创建成功 note_id: xxx」但一个字节都没写入 IMA。`create`/`append` 的 JSON 输出带 `"mock":true`，`search` **逐条**带（空结果输出 `[]`，无条目可标）；同时 `-Log` 会被跳过，不会把假 note_id 写进映射文件 |
 | `-CaptureFile` | 把每次请求的 endpoint / body / headers 落盘（凭证已脱敏为 `REDACTED`） | 请求正文与标题落盘留痕；凭证虽已脱敏，仍不建议在生产使用 |
 | `-NoExit` | 把 `exit` 换成可捕获异常，供用例断言退出码 | 失败不再以非零退出码暴露，自动化会把失败当成功继续跑。**单独使用会被直接拒绝**（必须与 `-MockFile`/`-CaptureFile` 同时出现） |
 
