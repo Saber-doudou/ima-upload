@@ -1,6 +1,6 @@
 {
-  "version": "3.5.2",
+  "version": "3.5.3",
   "publishedAt": 1792982218000,
   "readmeNoteId": null,
-  "changelog": "v3.5.2: 清掉 v3.4.9 之后遗留的 5 条账本边界。①记账/失效/查询三处统一过 _clean_title，修标题带首尾空格时账本 miss 退化成新建；②_forget_note 改为按 note_id 反查删除全部别名，修同一笔记在多个键名下残留死 ID；③_lookup_ledger 只接受非空字符串，修手工改坏成数字时被塞进请求体；④create --dedup 账本命中即判定已存在，不再多打一次 search_note；⑤文档把「空内容判失效」的副作用从「结果仍正确」改成条件说明（纯标题笔记会多一次搜索，极低概率在索引未跟上前新建），并补双键合并语义（CLI title 为主键，同 title 不同 content 标题会合并到同一条）。契约测试 86→89，四条新用例均用 git stash 验过红态"
+  "changelog": "v3.5.3: 修第四轮审查报的安全缺陷。①-CaptureFile 把真实 clientid/apikey 明文落盘（capture 分支序列化了整个 headers），改为写入前替换为 REDACTED；实测 capture 原文两项均为 REDACTED、真实凭证 Contains 全为 False。②-MockFile 是假成功通道：零网络请求却照旧打印「笔记创建成功」，改为 JSON 输出带 mock:true、人类可读模式打 [MOCK] 警告；-NoExit 单独使用直接拒绝。③顺带修真 bug：test_ps1.ps1 缺 UTF-8 BOM，PS5.1 按 GBK 解析导致中文乱码并误报语法错，已补 BOM。文档：移除硬编码测试项数（第三次漏更，改以运行输出为准）、A 表降级口径收窄、新增 D 表列测试开关与 ps1 能力面。ps1 测试 27→32"
 }

@@ -22,3 +22,6 @@
 | **`search` 一次返回上百条** | 服务端忽略 `start`/`end` 上限 | 本地按 `--limit` 截断（默认 20） |
 | **`list_note` 响应没有 `next_cursor`** | 只有 `is_end` | 翻页需自行累加已取条数作为下一轮 `cursor` |
 | **图片换链报 session ID is required** | `mcp_cloud_agent/upload_temp_file` 等双端点需 MCP 云代理会话，本地 client_id 不支持 | 换链失败会明确提示；插图批量处理改用 `--transform-images` 内嵌 |
+| **`-CaptureFile` 把真实凭证明文落盘** | capture 分支序列化了整个 `$headers`，含真实 `client_id` / `api_key` | 落盘前把这两个头的值替换为 `REDACTED`；测试只断言「头存在」与 ctx 格式，脱敏不影响覆盖 |
+| **ps1 脚本文件缺 UTF-8 BOM** | PS5.1 按 ANSI(GBK) 解析无 BOM 脚本，中文全乱码；`Parser::ParseFile` 还会误报「字符串缺少终止符」 | 所有 `.ps1` 一律存 UTF-8 **带 BOM**；`test_ps1.ps1` 曾因此报假语法错 |
+| **mock 模式输出「创建成功」但没写入** | `-MockFile` 命中即返回预设响应，零网络请求 | JSON 输出带 `"mock":true`，人类可读模式打 `[MOCK]` 警告；`-NoExit` 必须与注入点同时使用，否则直接拒绝 |

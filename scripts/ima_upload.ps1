@@ -94,6 +94,22 @@ function Write-JsonError {
     Write-Output ($obj | ConvertTo-Json -Compress)
 }
 
+function Add-MockMarker {
+    # 传了 -MockFile 时在结果对象上打 mock=true。
+    # 为什么必须有：mock 模式下「创建成功 note_id: xxx」是真的会打出来的，但一个字节都没写到 IMA。
+    # 自动化若误传 -MockFile，没有这个字段就会把假成功当归档成功，数据静默丢失。
+    param([hashtable]$Obj)
+    if ($MockFile) { $Obj["mock"] = $true }
+    return $Obj
+}
+
+function Write-MockNotice {
+    # 人类可读模式下的显式警告。JSON 模式由 Add-MockMarker 的 mock=true 承担机器识别。
+    if ($MockFile) {
+        Write-Host "[MOCK] 预设响应，未写入真实 IMA" -ForegroundColor Yellow
+    }
+}
+
 # ===== 凭证加载 =====
 $ConfigBase = "$env:USERPROFILE\.config\ima"
 $ClientIdPath = Join-Path $ConfigBase "client_id"
@@ -142,7 +158,18 @@ function Invoke-IMAApi {
 
     if ($CaptureFile) {
         # 只记请求，不发网络。测试据此断言 body 结构与请求头。
-        $line = @{ endpoint = $Endpoint; body = $Body; headers = $headers } |
+        # 凭证必须脱敏：capture 文件是落盘的，clientid/apikey 是真实凭证，
+        # 明文写出去等于给凭证泄漏开一个口子（调用被打断时临时目录可能残留）。
+        # 断言只需「头存在」与 ctx 格式，替换成 REDACTED 不影响覆盖。
+        $capturedHeaders = @{}
+        foreach ($name in $headers.Keys) {
+            if ($name -eq "ima-openapi-clientid" -or $name -eq "ima-openapi-apikey") {
+                $capturedHeaders[$name] = "REDACTED"
+            } else {
+                $capturedHeaders[$name] = $headers[$name]
+            }
+        }
+        $line = @{ endpoint = $Endpoint; body = $Body; headers = $capturedHeaders } |
             ConvertTo-Json -Compress -Depth 10
         Add-Content -Path $CaptureFile -Value $line -Encoding UTF8
     }
@@ -214,6 +241,14 @@ function Write-NoteIdLog {
 }
 
 # ===== 主逻辑 =====
+
+# 三个测试开关都不该出现在生产调用里：-MockFile 会造出「成功但没写」的假象，
+# -CaptureFile 会把请求内容落盘，-NoExit 会让失败不再以非零退出码暴露给自动化。
+# 前两者仍有存在价值（自动回归必需），所以只加护栏；-NoExit 单独使用没有正当场景，直接拒绝。
+if ($NoExit -and -not $MockFile -and -not $CaptureFile) {
+    Fail-Argument "-NoExit 仅供自动测试使用，必须与 -MockFile 或 -CaptureFile 同时出现"
+}
+
 switch ($Command) {
 
     "create" {
@@ -255,7 +290,7 @@ switch ($Command) {
         }
 
         $noteId = $resp.data.note_id
-        $result = @{ note_id = $noteId; title = $title }
+        $result = Add-MockMarker -Obj @{ note_id = $noteId; title = $title }
 
         if ($Log) {
             Write-NoteIdLog -LogFile $Log -Title $title -NoteId $noteId
@@ -264,6 +299,7 @@ switch ($Command) {
         if ($Json) {
             Write-Output ($result | ConvertTo-Json -Compress)
         } else {
+            Write-MockNotice
             Write-Host "笔记创建成功" -ForegroundColor Green
             Write-Host "   note_id: $noteId"
             Write-Host "   title:   $title"
@@ -303,8 +339,9 @@ switch ($Command) {
         }
 
         if ($Json) {
-            Write-Output (@{ note_id = $noteId; ok = $true } | ConvertTo-Json -Compress)
+            Write-Output (Add-MockMarker -Obj @{ note_id = $noteId; ok = $true } | ConvertTo-Json -Compress)
         } else {
+            Write-MockNotice
             Write-Host "内容已追加到笔记 $noteId" -ForegroundColor Green
         }
     }
@@ -353,6 +390,7 @@ switch ($Command) {
             }
             Write-Output ($output | ConvertTo-Json -Depth 5)
         } else {
+            Write-MockNotice
             if ($notes.Count -eq 0) {
                 Write-Host "未找到匹配「$keyword」的笔记"
             } else {

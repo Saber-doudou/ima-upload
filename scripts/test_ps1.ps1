@@ -1,4 +1,4 @@
-#!/usr/bin/env pwsh
+﻿#!/usr/bin/env pwsh
 #Requires -Version 5.1
 <#
 .SYNOPSIS
@@ -131,6 +131,41 @@ try {
     Check ($null -ne $h.'ima-openapi-ctx') "请求头含 ima-openapi-ctx"
     Check ($h.'ima-openapi-ctx' -like "skill_version=*") "ctx 头格式正确" ("实际 " + $h.'ima-openapi-ctx')
     Check ([bool]$h.'ima-openapi-clientid') "携带 clientid 头"
+} finally { Remove-Item $fx.Dir -Recurse -Force }
+
+# 6b. capture 文件不得落真实凭证（clientid/apikey 必须脱敏）
+# 这条是安全回归：capture 会落盘，明文凭证在调用被打断时可能残留。
+$fx = New-Fixture @{ import_doc = @{ code = 0; data = @{ note_id = "n6b" } } }
+try {
+    $null = & $sb create "标题S" "正文" -Json -MockFile $fx.Mock -CaptureFile $fx.Capture
+    $capRaw = Get-Content $fx.Capture -Raw -Encoding UTF8
+    Check ($capRaw -like "*REDACTED*") "capture 中凭证已替换为 REDACTED"
+    $leaked = @()
+    foreach ($name in @("client_id", "api_key")) {
+        $fp = Join-Path (Join-Path $HOME ".config/ima") $name
+        if (Test-Path $fp) {
+            $v = (Get-Content $fp -Raw -Encoding UTF8).Trim()
+            if ($v -and $capRaw.Contains($v)) { $leaked += $name }
+        }
+    }
+    Check ($leaked.Count -eq 0) "capture 未写入真实凭证" ("泄漏项: " + ($leaked -join ","))
+} finally { Remove-Item $fx.Dir -Recurse -Force }
+
+# 6c. mock 模式结果必须带 mock=true，否则自动化会把假成功当归档成功
+$fx = New-Fixture @{ import_doc = @{ code = 0; data = @{ note_id = "n6c" } } }
+try {
+    $out = & $sb create "标题T" "正文" -Json -MockFile $fx.Mock -CaptureFile $fx.Capture
+    $o = (($out | Out-String).Trim() | ConvertFrom-Json)
+    Check ($o.mock -eq $true) "create 的 mock 模式输出带 mock=true"
+    Check ($o.note_id -eq "n6c") "mock 响应仍被正常解析"
+} finally { Remove-Item $fx.Dir -Recurse -Force }
+
+# 6d. -NoExit 不得脱离测试注入点单独使用
+$fx = New-Fixture @{}
+try {
+    $threw = $false
+    try { $null = & $sb create "标题U" "正文" -Json -NoExit } catch { $threw = $true }
+    Check $threw "-NoExit 单独使用被拒绝"
 } finally { Remove-Item $fx.Dir -Recurse -Force }
 
 # 7. 中文与 JSON 输出不被破坏

@@ -2,6 +2,35 @@
 
 本文件记录 ima-upload 技能的版本变更。版本号遵循三段式（MAJOR.MINOR.PATCH），每段不超过一位数。
 
+## v3.5.3 — 2026-11-08
+
+修第四轮审查报的安全缺陷：`-CaptureFile` 把真实凭证明文写进磁盘。ps1 测试 27 → 32 项。
+
+### 🔴 凭证落盘（安全）
+
+`Invoke-IMAApi` 的 capture 分支序列化了整个 `$headers`，其中 `ima-openapi-clientid` / `ima-openapi-apikey` 是真实凭证。capture 文件会落盘，调用被打断时临时目录可能残留，等于给凭证泄漏开口子。
+
+改为落盘前把这两个头的值替换为 `REDACTED`（`ConvertTo-Json` 在 PS5.1 会把 `<` `>` 转义成 `\u003c`，所以标记不能带尖括号）。断言只需要「头存在」与 ctx 格式，脱敏不影响覆盖。**实测**：capture 原文里两项均为 `REDACTED`，真实 client_id / api_key 的 `Contains` 全为 False。
+
+### 🟡 mock 假成功通道
+
+`-MockFile` 命中即返回预设响应、零网络请求，但输出照旧打印「笔记创建成功 note_id: xxx」。自动化误传就会把假成功当归档成功。
+
+- JSON 输出新增 `"mock":true`（create / append），机器可据此识别
+- 人类可读模式打 `[MOCK] 预设响应，未写入真实 IMA` 警告
+- `-NoExit` 单独使用直接拒绝：它必须与 `-MockFile` / `-CaptureFile` 同时出现，否则出错不再以非零退出码暴露，自动化会把失败当成功
+
+### 顺带修的真 bug
+
+`test_ps1.ps1` 缺 UTF-8 BOM。PS5.1 按 ANSI(GBK) 解析无 BOM 脚本，中文全乱码，`Parser::ParseFile` 还会误报「字符串缺少终止符」。已补 BOM，按 `-File` 方式实跑 32/32 通过。
+
+### 文档
+
+- README 与 SKILL.md 移除硬编码测试项数（这是第三次漏更，改为「以运行输出为准」）
+- A 表降级口径收窄为「明确的长度/体积类报错」，与白名单一致
+- 新增 D 表：三个测试开关的作用、生产误传后果，以及 ps1 只支持 `create`/`append`/`search` 的能力面
+- `references/pitfalls.md` 补三条：凭证落盘、ps1 缺 BOM、mock 假成功
+
 ## v3.5.2 — 2026-11-08
 
 清掉 v3.4.9 之后遗留的 5 条账本边界，一条不留。契约测试 86 → 89 项。
