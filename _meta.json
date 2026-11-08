@@ -1,6 +1,6 @@
 {
-  "version": "3.5.3",
+  "version": "3.5.4",
   "publishedAt": 1792982218000,
   "readmeNoteId": null,
-  "changelog": "v3.5.3: 修第四轮审查报的安全缺陷。①-CaptureFile 把真实 clientid/apikey 明文落盘（capture 分支序列化了整个 headers），改为写入前替换为 REDACTED；实测 capture 原文两项均为 REDACTED、真实凭证 Contains 全为 False。②-MockFile 是假成功通道：零网络请求却照旧打印「笔记创建成功」，改为 JSON 输出带 mock:true、人类可读模式打 [MOCK] 警告；-NoExit 单独使用直接拒绝。③顺带修真 bug：test_ps1.ps1 缺 UTF-8 BOM，PS5.1 按 GBK 解析导致中文乱码并误报语法错，已补 BOM。文档：移除硬编码测试项数（第三次漏更，改以运行输出为准）、A 表降级口径收窄、新增 D 表列测试开关与 ps1 能力面。ps1 测试 27→32"
+  "changelog": "v3.5.4: 补 v3.5.3 两处残留面。①mock 标记没覆盖 search（输出是对象数组，无法像 hashtable 那样附加字段），与 D 表「JSON 输出会带 mock:true」的承诺不符——改为 search 结果逐条带 mock:true。②-MockFile + -Log 的磁盘副作用没拦：Write-NoteIdLog 会把预设的假 note_id 写进真实映射文件，后续 append 指向不存在的笔记——改为 mock 模式跳过写日志。③Write-JsonError 也带 mock:true；④修正 capture 注释（单独传 -CaptureFile 时请求仍会真实发出，只有 -MockFile 才 return）；⑤删掉 SKILL.md 契约测试段里刚写死的「当前 32 项」。ps1 测试 32→35，两条新用例先对 v3.5.3 跑红（33/35，正是这两处），第三条为字段保护断言"
 }

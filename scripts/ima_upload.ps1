@@ -91,6 +91,8 @@ function Write-JsonError {
     param([string]$Msg, $Code = $null)
     $obj = @{ error = $true; msg = $Msg }
     if ($null -ne $Code) { $obj["code"] = $Code }
+    # 错误同样可能是 mock 造出来的，标上以免被当成真实服务端返回
+    if ($MockFile) { $obj["mock"] = $true }
     Write-Output ($obj | ConvertTo-Json -Compress)
 }
 
@@ -157,7 +159,8 @@ function Invoke-IMAApi {
     }
 
     if ($CaptureFile) {
-        # 只记请求，不发网络。测试据此断言 body 结构与请求头。
+        # 落盘的是请求内容；注意单独传 -CaptureFile 时请求仍会真实发出，
+        # 只有 -MockFile 才会在记录后 return（不发网络）。
         # 凭证必须脱敏：capture 文件是落盘的，clientid/apikey 是真实凭证，
         # 明文写出去等于给凭证泄漏开一个口子（调用被打断时临时目录可能残留）。
         # 断言只需「头存在」与 ctx 格式，替换成 REDACTED 不影响覆盖。
@@ -236,6 +239,9 @@ function Read-FileContent {
 
 function Write-NoteIdLog {
     param([string]$LogFile, [string]$Title, [string]$NoteId)
+    # mock 模式一律不写映射文件。预设响应里的 note_id 是假的，写进真实映射后
+    # 后续 append 会指向一条不存在的笔记——这比「没有日志」危险得多。
+    if ($MockFile) { return }
     $entry = (@{ title = $Title; note_id = $NoteId; created_at = (Get-Date -Format "o") } | ConvertTo-Json -Compress)
     Add-Content -Path $LogFile -Value $entry -Encoding UTF8
 }
@@ -382,11 +388,14 @@ switch ($Command) {
         $notes = $resp.data.search_note_infos
         if ($Json) {
             $output = $notes | ForEach-Object {
-                @{
+                $item = @{
                     note_id = $_.note_book_info.note_id
                     title   = $_.note_book_info.title
                     summary = $_.note_book_info.summary
                 }
+                # 与 create/append 同口径：mock 模式下逐条标注，避免预设结果被当成真实数据
+                if ($MockFile) { $item["mock"] = $true }
+                $item
             }
             Write-Output ($output | ConvertTo-Json -Depth 5)
         } else {

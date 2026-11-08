@@ -168,6 +168,27 @@ try {
     Check $threw "-NoExit 单独使用被拒绝"
 } finally { Remove-Item $fx.Dir -Recurse -Force }
 
+# 6e. mock 模式下 -Log 不得写映射文件（假 note_id 写进去会让后续 append 指向不存在的笔记）
+$fx = New-Fixture @{ import_doc = @{ code = 0; data = @{ note_id = "FAKE_ID" } } }
+try {
+    $logPath = Join-Path $fx.Dir "note_ids.jsonl"
+    $null = & $sb create "标题V" "正文" -Json -MockFile $fx.Mock -CaptureFile $fx.Capture -Log $logPath
+    $logExists = Test-Path $logPath
+    $logEmpty = if ($logExists) { ((Get-Content $logPath -Raw -Encoding UTF8).Trim().Length -eq 0) } else { $true }
+    Check ((-not $logExists) -or $logEmpty) "mock 模式不把假 note_id 写进映射文件"
+} finally { Remove-Item $fx.Dir -Recurse -Force }
+
+# 6f. mock 模式 search 的 JSON 结果逐条带 mock=true
+$fx = New-Fixture @{ search_note = @{ code = 0; data = @{ search_note_infos = @(
+    @{ note_book_info = @{ note_id = "r1"; title = "标题"; summary = "s" } }
+) } } }
+try {
+    $out = & $sb search "关键词" -Json -MockFile $fx.Mock -CaptureFile $fx.Capture
+    $o = (($out | Out-String).Trim() | ConvertFrom-Json)
+    Check ($o.mock -eq $true) "search 的 mock 结果带 mock=true"
+    Check ($o.note_id -eq "r1") "search 结果字段未被破坏"
+} finally { Remove-Item $fx.Dir -Recurse -Force }
+
 # 7. 中文与 JSON 输出不被破坏
 $fx = New-Fixture @{ import_doc = @{ code = 0; data = @{ note_id = "n7" } } }
 try {

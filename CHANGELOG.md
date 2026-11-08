@@ -2,6 +2,28 @@
 
 本文件记录 ima-upload 技能的版本变更。版本号遵循三段式（MAJOR.MINOR.PATCH），每段不超过一位数。
 
+## v3.5.4 — 2026-11-08
+
+补 v3.5.3 的两处残留面：mock 标记没覆盖 search、`-Log` 的磁盘副作用没拦住。ps1 测试 32 → 35 项。
+
+### 🟡 mock 标记覆盖不全
+
+`search -Json` 的输出是对象数组，v3.5.3 只给 create/append 这两个 hashtable 加了 `mock`，search 没有，而 SKILL.md D 表笼统写「JSON 输出会带 `"mock":true`」——承诺比实现宽。
+
+改为 search 的结果**逐条**带 `mock: true`。只读操作虽不会造成数据丢失，但自动化把预设搜索结果当真实数据一样会误判。
+
+### 🟡 `-MockFile + -Log` 污染映射文件
+
+输出层标了 mock，但 `Write-NoteIdLog` 这个**磁盘副作用**没拦。实测误传时会把 `{"note_id":"FAKE_ID"}` 写进真实映射文件，后续 `append` 直接指向不存在的笔记——比「没有日志」危险得多。
+
+改为 mock 模式一律跳过写日志。
+
+### 细节
+
+- `Write-JsonError` 的 JSON 错误输出也带 `mock: true`，避免 mock 造出的错误被当成真实服务端返回
+- 修正 capture 分支那句「只记请求，不发网络」的注释：**单独传 `-CaptureFile` 时请求仍会真实发出**，只有 `-MockFile` 才会记录后 return
+- SKILL.md 契约测试段删掉「当前 32 项」——上一版刚把项数改成「以运行输出为准」，这里自己又写死了一个数字，等于留了个会过期的锚
+
 ## v3.5.3 — 2026-11-08
 
 修第四轮审查报的安全缺陷：`-CaptureFile` 把真实凭证明文写进磁盘。ps1 测试 27 → 32 项。
